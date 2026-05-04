@@ -1347,19 +1347,26 @@ export default function App(){
             </div>
           </div>
           <div className="card">
-            <div className="lbl" style={{marginBottom:6}}>XERO C1 — INPUT LASER MANUALE</div>
+            <div className="lbl" style={{marginBottom:6}}>GARMIN XERO C1 — CRONOGRAFO</div>
             <div style={{fontSize:7,color:"rgba(0,255,65,.3)",marginBottom:8,lineHeight:1.7}}>
               Il Garmin Xero C1 usa ANT+, non supportato via browser.
-              Inserisci distanza misurata o usa il comando vocale "Vega distanza 150".
+              Inserisci manualmente la MV misurata — verrà usata nel calcolo balistico.
             </div>
-            <div style={{display:"flex",gap:8}}>
-              <input type="number" className="vg-in"
-                style={{flex:1,fontSize:22,fontFamily:"Orbitron,monospace",textAlign:"center"}}
-                value={dist} min={10} max={2500} onChange={e=>setDist(+e.target.value)}/>
-              <span style={{alignSelf:"center",fontSize:10,color:"rgba(0,255,65,.4)"}}>m</span>
-              <button className="btn-prim" style={{fontSize:9,padding:"10px 14px"}}
-                onClick={()=>{setMainTab("home");setActivePanel(null)}}>→</button>
-            </div>
+            <MVPanel
+              mvList={mvList}
+              onAdd={v=>setMvList(l=>[...l,v])}
+              onRemove={i=>setMvList(l=>l.filter((_,j)=>j!==i))}
+              onApply={avg=>{setWx(w=>({...w,mv:+avg.toFixed(1)}));speak(`MV ${avg.toFixed(1)} metri al secondo`)}}
+              appliedMv={wx.mv}
+            />
+            {wx.mv&&(
+              <div style={{marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"6px 10px",background:"rgba(0,255,65,.04)",border:"1px solid rgba(0,255,65,.12)"}}>
+                <span style={{fontSize:9,color:GRN}}>MV attiva: <span className="orb">{wx.mv} m/s</span></span>
+                <button className="btn-out" style={{fontSize:8,padding:"4px 10px"}}
+                  onClick={()=>setWx(w=>({...w,mv:null}))}>RESET</button>
+              </div>
+            )}
           </div>
 
           <div className="card">
