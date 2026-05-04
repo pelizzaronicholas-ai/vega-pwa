@@ -9,6 +9,10 @@ const BC_CONV = 703.07
 const CALYPSO_SERVICE = "0000fd00-0000-1000-8000-00805f9b34fb"
 const CALYPSO_WIND_CH = "0000fd01-0000-1000-8000-00805f9b34fb"
 
+// Kestrel 5700 Elite — Nordic UART Service
+const KESTREL_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+const KESTREL_TX_CH   = "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // notify
+
 // ═══════════════════════════════════════════════════════════════
 // CATALOGO MUNIZIONI
 // ═══════════════════════════════════════════════════════════════
@@ -71,6 +75,28 @@ const G7T=[
   [1.5,.3440],[1.6,.3315],[1.7,.3209],[1.8,.3117],[1.9,.3042],
   [2.0,.2980],[2.5,.2709],[3.0,.2470],[4.0,.2104],[5.0,.1832],
 ]
+// Tabella drag G1 — usata per rimfire e proiettili dichiarati in G1
+const G1T=[
+  [0,.2629],[.05,.2558],[.1,.2487],[.15,.2413],[.2,.2344],[.25,.2278],
+  [.3,.2214],[.35,.2155],[.4,.2104],[.45,.2061],[.5,.2032],[.55,.202],
+  [.6,.2034],[.65,.2165],[.7,.2534],[.725,.2983],[.75,.3678],[.775,.4732],
+  [.8,.6502],[.825,.8726],[.85,1.0],[.875,.9908],[.9,.9297],[.925,.8752],
+  [.95,.8483],[.975,.8101],[1.0,.7756],[1.025,.7451],[1.05,.7283],
+  [1.1,.7101],[1.2,.6889],[1.3,.6649],[1.4,.6432],[1.5,.6251],
+  [1.6,.6100],[1.8,.5860],[2.0,.5692],[2.5,.5483],[3.0,.5323],[5.0,.4900],
+]
+function g1cd(m){
+  if(m<=G1T[0][0])return G1T[0][1]
+  if(m>=G1T[G1T.length-1][0])return G1T[G1T.length-1][1]
+  for(let i=0;i<G1T.length-1;i++){
+    if(m>=G1T[i][0]&&m<=G1T[i+1][0]){
+      const f=(m-G1T[i][0])/(G1T[i+1][0]-G1T[i][0])
+      return G1T[i][1]+f*(G1T[i+1][1]-G1T[i][1])
+    }
+  }
+  return .26
+}
+
 function g7cd(m){
   if(m<=G7T[0][0])return G7T[0][1]
   if(m>=G7T[G7T.length-1][0])return G7T[G7T.length-1][1]
@@ -83,20 +109,25 @@ function g7cd(m){
   return .12
 }
 
-function physSolve(dist, ammoKey, scopeH_cm, zeroM, wx={}){
+function physSolve(dist, ammoKey, scopeH_cm, zeroM, wx={}, profile=null){
   const a=FLAT[ammoKey]; if(!a||dist<=0)return null
   const h=scopeH_cm/100, g=9.80665, dt=.002
   const tk=273.15+(wx.temp??15)
   const rhoAir=Math.exp(-(wx.alt??0)/8500)*(288.15/tk)*1.225
   const sos=331.3*Math.sqrt(tk/273.15)
-  const mv=wx.mv??a.mv
-  const BC_SI=a.bc_g7*BC_CONV
+  // MV: usa cronografo > profilo custom > tabellare
+  const mv=wx.mv??profile?.mvMs??a.mv
+  // BC: usa valore truato dal profilo se disponibile, altrimenti catalogo
+  const bcVal = (profile?.bcValue>0) ? profile.bcValue : a.bc_g7
+  // Sempre G7 — il truing BC porta il modello G7 a matchare i dati reali
+  const BC_SI = bcVal*BC_CONV
+  const cdFn  = g7cd
 
   const fly=(ang,maxX)=>{
     let vx=mv*Math.cos(ang),vy=mv*Math.sin(ang),x=0,y=-h,t=0
     const acc=(vx2,vy2)=>{
       const v=Math.sqrt(vx2*vx2+vy2*vy2); if(v<1)return[vx2,vy2,0,-g]
-      const drag=rhoAir*v*v*g7cd(v/sos)/(2*BC_SI)
+      const drag=rhoAir*v*v*cdFn(v/sos)/(2*BC_SI)
       return[vx2,vy2,-drag*vx2/v,-g-drag*vy2/v]
     }
     while(x<maxX+2&&t<8){
@@ -467,7 +498,7 @@ export default function App(){
   useEffect(()=>{distRef.current=dist},[dist])
 
   useEffect(()=>{
-    const r=physSolve(dist,ammoKey,scopeH,zeroM,wx)
+    const r=physSolve(dist,ammoKey,scopeH,zeroM,wx,activeProfile??null)
     setSol(r); setPulse(true)
     const t=setTimeout(()=>setPulse(false),300)
     return()=>clearTimeout(t)
@@ -476,7 +507,7 @@ export default function App(){
   useEffect(()=>{
     const isRim=ammoGroup==="RIMFIRE"
     const steps=isRim?[25,50,75,100,125,150,175,200,225,250]:[50,100,150,200,300,400,500,600,700,800]
-    setRangeCard(steps.map(d=>({dist:d,...(physSolve(d,ammoKey,scopeH,zeroM,wx)||{})})))
+    setRangeCard(steps.map(d=>({dist:d,...(physSolve(d,ammoKey,scopeH,zeroM,wx,activeProfile??null)||{})})))
   },[ammoKey,ammoGroup,scopeH,zeroM,wx])
 
   // ── Geolocation ──
@@ -542,9 +573,20 @@ export default function App(){
   const [bleName,      setBleName]      = useState("")
   const [bleError,     setBleError]     = useState("")
   const bleDevRef  = useRef(null)
+  // Kestrel 5700 Elite BLE
+  const [kestrelConnected, setKestrelConnected] = useState(false)
+  const [kestrelName,      setKestrelName]      = useState("")
+  const kestrelDevRef = useRef(null)
 
   // ── MV manuale ──
   const [mvList, setMvList] = useState([])
+
+  // Truing — misure reali per BC truing
+  const [truingRows, setTruingRows] = useState([
+    {id:1,dist:100,dropMeas:null,unit:"mrad"},
+  ])
+  const [truingMv, setTruingMv] = useState(null)
+  const [truingMsg, setTruingMsg] = useState("")
 
   // ── Voice ──
   const [voiceState,      setVoiceState]      = useState("idle")
@@ -610,7 +652,7 @@ export default function App(){
     tgtIdxRef.current=0; shotsLeftRef.current=stage.targets[0].shots
     setDist(stage.targets[0].dist); setStageActive(true)
     setMainTab("home"); setActivePanel(null)
-    setStageSols(stage.targets.map(t=>({...t,...(physSolve(t.dist,ammoKey,scopeH,zeroM,wx)||{})})))
+    setStageSols(stage.targets.map(t=>({...t,...(physSolve(t.dist,ammoKey,scopeH,zeroM,wx,activeProfile??null)||{})})))
     speak(`${stage.name}. ${stage.targets.length} bersagli, ${stage.par} secondi.`,true)
     setTimeout(()=>speakTarget(stage,0,wx),1100)
   },[speak,speakTarget,ammoKey,scopeH,zeroM,wx])
@@ -701,6 +743,91 @@ export default function App(){
     bleDevRef.current?.gatt?.disconnect(); setBleConnected(false); setBleName("")
   },[])
 
+  // ── BLE Kestrel 5700 Elite ──
+  const connectKestrel = useCallback(async()=>{
+    if(!navigator.bluetooth){setBleError("Web Bluetooth: usa Chrome/Edge Android");return}
+    setBleError("")
+    try{
+      const device=await navigator.bluetooth.requestDevice({
+        filters:[{namePrefix:"Kestrel"},{namePrefix:"KESTREL"}],
+        optionalServices:[KESTREL_SERVICE],
+      })
+      kestrelDevRef.current=device; setKestrelName(device.name||"Kestrel")
+      const server=await device.gatt.connect()
+      const service=await server.getPrimaryService(KESTREL_SERVICE)
+      const tx=await service.getCharacteristic(KESTREL_TX_CH)
+      await tx.startNotifications()
+      tx.addEventListener("characteristicvaluechanged",e=>{
+        // Kestrel invia stringhe NMEA-like: temp,pressione,umidità,velocità_vento,direzione
+        try{
+          const txt=new TextDecoder().decode(e.target.value).trim()
+          const parts=txt.split(",")
+          if(parts.length>=5){
+            const temp=parseFloat(parts[0])
+            const wind=parseFloat(parts[3])
+            const dir=parseFloat(parts[4])
+            if(!isNaN(temp))setWx(w=>({...w,temp:+temp.toFixed(1)}))
+            if(!isNaN(wind))setWx(w=>({...w,wind:+wind.toFixed(1)}))
+            if(!isNaN(dir))setWx(w=>({...w,windAngle:Math.round(dir)}))
+          }
+        }catch{}
+      })
+      setKestrelConnected(true)
+      device.addEventListener("gattserverdisconnected",()=>{
+        setKestrelConnected(false); setKestrelName(""); kestrelDevRef.current=null
+      })
+    }catch(e){if(e.name!=="NotFoundError")setBleError("Kestrel BLE: "+e.message)}
+  },[])
+
+  const disconnectKestrel = useCallback(()=>{
+    kestrelDevRef.current?.gatt?.disconnect()
+    setKestrelConnected(false); setKestrelName("")
+  },[])
+
+  // ── Truing BC — bisezione sul BC G7 ──
+  const computeTruing = useCallback(()=>{
+    const validRows=truingRows.filter(r=>r.dropMeas!==null&&r.dist>0)
+    if(validRows.length===0){setTruingMsg("Inserisci almeno una misura reale");return}
+
+    // Converti tutte le misure in mrad
+    const measures=validRows.map(r=>({
+      dist:r.dist,
+      mrad:r.unit==="MOA"?r.dropMeas/3.4377:r.dropMeas,
+    }))
+
+    // Funzione che calcola drop mrad con un dato BC G7
+    const calcDrop=(dist,bc,mv)=>{
+      const s=physSolve(dist,ammoKey,scopeH,zeroM,{...wx,mv:mv??wx.mv},
+        activeProfile?{...activeProfile,bcValue:bc,bcModel:"G7"}:{bcValue:bc,bcModel:"G7"})
+      return s?.dropMrad??0
+    }
+
+    // Bisezione sul BC per minimizzare errore su tutte le distanze
+    let lo=0.03,hi=0.35
+    for(let i=0;i<80;i++){
+      const mid=(lo+hi)/2
+      const err=measures.reduce((sum,m)=>sum+(calcDrop(m.dist,mid,null)-m.mrad),0)
+      if(err>0) lo=mid; else hi=mid
+    }
+    const bcTruato=+((lo+hi)/2).toFixed(4)
+
+    // Calcola errori per ogni distanza con BC truato
+    const errors=measures.map(m=>{
+      const calc=calcDrop(m.dist,bcTruato,null)
+      return{...m,calc:+calc.toFixed(3),delta:+(calc-m.mrad).toFixed(3)}
+    })
+
+    const msg=`BC G7 truato: ${bcTruato} | Errori: ${errors.map(e=>`${e.dist}m:${e.delta>0?"+":""}${e.delta}mrad`).join(", ")}`
+    setTruingMsg(msg)
+    setTruingMv(bcTruato) // Temporaneo per visualizzazione
+
+    // Offri di salvare nel profilo attivo
+    if(activeProfileId){
+      setProfiles(prev=>prev.map(p=>p.id===activeProfileId?{...p,bcValue:bcTruato,bcModel:"G7"}:p))
+      setTruingMsg(msg+" → SALVATO nel profilo attivo")
+    }
+  },[truingRows,ammoKey,scopeH,zeroM,wx,activeProfile,activeProfileId,setProfiles])
+
   // ── PDF import ──
   const handlePdfFile = useCallback(async(file)=>{
     if(!file)return; setPdfLoading(true); setBleError("")
@@ -786,6 +913,7 @@ export default function App(){
     clearInterval(timerRef.current)
     recRef.current?.stop()
     bleDevRef.current?.gatt?.disconnect()
+    kestrelDevRef.current?.gatt?.disconnect()
     wakeLockRef.current?.release()
   },[])
 
@@ -1177,6 +1305,26 @@ export default function App(){
             {bleError&&<div style={{fontSize:8,color:AMB,marginTop:8}}>{bleError}</div>}
           </div>
           <div className="card">
+            <div className="lbl" style={{marginBottom:8}}>KESTREL 5700 ELITE BLE</div>
+            {!kestrelConnected?(
+              <button className="btn-prim" style={{width:"100%",background:CYN,color:"#020c04"}}
+                onClick={connectKestrel}>◉ CONNETTI KESTREL</button>
+            ):(
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:10,color:CYN}}>◉ {kestrelName}</div>
+                  <div style={{fontSize:7,color:"rgba(0,212,255,.4)"}}>Temp · Vento · Umidità live</div>
+                </div>
+                <button className="btn-out" style={{fontSize:9,padding:"6px 10px",color:RED,borderColor:"rgba(255,51,68,.3)"}}
+                  onClick={disconnectKestrel}>DISC.</button>
+              </div>
+            )}
+            {bleError&&bleError.includes("Kestrel")&&(
+              <div style={{fontSize:8,color:AMB,marginTop:6}}>{bleError}</div>
+            )}
+          </div>
+
+          <div className="card">
             <div className="lbl" style={{marginBottom:8}}>ATMOSFERA</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               {[
@@ -1198,6 +1346,22 @@ export default function App(){
               ))}
             </div>
           </div>
+          <div className="card">
+            <div className="lbl" style={{marginBottom:6}}>XERO C1 — INPUT LASER MANUALE</div>
+            <div style={{fontSize:7,color:"rgba(0,255,65,.3)",marginBottom:8,lineHeight:1.7}}>
+              Il Garmin Xero C1 usa ANT+, non supportato via browser.
+              Inserisci distanza misurata o usa il comando vocale "Vega distanza 150".
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <input type="number" className="vg-in"
+                style={{flex:1,fontSize:22,fontFamily:"Orbitron,monospace",textAlign:"center"}}
+                value={dist} min={10} max={2500} onChange={e=>setDist(+e.target.value)}/>
+              <span style={{alignSelf:"center",fontSize:10,color:"rgba(0,255,65,.4)"}}>m</span>
+              <button className="btn-prim" style={{fontSize:9,padding:"10px 14px"}}
+                onClick={()=>{setMainTab("home");setActivePanel(null)}}>→</button>
+            </div>
+          </div>
+
           <div className="card">
             <div className="lbl" style={{marginBottom:6}}>MV CRONOGRAFO</div>
             <MVPanel mvList={mvList} onAdd={v=>setMvList(l=>[...l,v])} onRemove={i=>setMvList(l=>l.filter((_,j)=>j!==i))}
@@ -1378,6 +1542,8 @@ export default function App(){
                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name||"—"}</div>
                   <div style={{fontSize:8,color:"rgba(0,255,65,.45)",marginTop:3}}>
                     {p.caliber} · {p.ammoKey} · ◎{p.zeroM}m
+                    {p.bcValue>0&&<span style={{color:CYN}}> · BC✓{p.bcValue}</span>}
+                    {p.mvMs&&<span style={{color:GRN}}> · MV:{p.mvMs}m/s</span>}
                   </div>
                   <div style={{fontSize:8,color:"rgba(0,212,255,.45)",marginTop:2}}>
                     {p.scopeName||"—"} · {p.scopePlane} · h={p.scopeHeightCm}cm · {p.reticleType} {p.clickValue}cl
@@ -1579,6 +1745,90 @@ export default function App(){
               value={editingProfile.notes??""} onChange={e=>setEditingProfile(p=>({...p,notes:e.target.value}))}/>
           </div>
 
+          <div className="card" style={{borderColor:"rgba(0,212,255,.2)"}}>
+            <div className="lbl" style={{marginBottom:8,color:CYN}}>TRUING BALISTICO — BC G7</div>
+            <div style={{fontSize:8,color:"rgba(0,255,65,.4)",marginBottom:10,lineHeight:1.7}}>
+              Inserisci il drop REALE misurato al poligono per ogni distanza.
+              VEGA calcola il BC G7 truato e lo salva nel profilo.
+            </div>
+
+            {/* Tabella misure */}
+            <div style={{display:"grid",gridTemplateColumns:"52px 1fr 70px 32px",gap:4,
+              padding:"4px 0",marginBottom:4}}>
+              {["DIST","DROP REALE","UNITÀ",""].map(h=>(
+                <div key={h} style={{fontSize:6,color:"rgba(0,255,65,.3)",letterSpacing:".1em"}}>{h}</div>
+              ))}
+            </div>
+            {truingRows.map((row,i)=>(
+              <div key={row.id} style={{display:"grid",gridTemplateColumns:"52px 1fr 70px 32px",
+                gap:4,marginBottom:6,alignItems:"center"}}>
+                <input type="number" className="vg-in" style={{fontSize:13,textAlign:"center"}}
+                  placeholder="m" value={row.dist||""}
+                  onChange={e=>setTruingRows(prev=>prev.map(r=>r.id===row.id?{...r,dist:+e.target.value}:r))}/>
+                <input type="number" className="vg-in" style={{fontSize:13}} step={.01}
+                  placeholder="es. 2.10" value={row.dropMeas??""} 
+                  onChange={e=>setTruingRows(prev=>prev.map(r=>r.id===row.id?{...r,dropMeas:e.target.value?+e.target.value:null}:r))}/>
+                <div style={{display:"flex",gap:2}}>
+                  {["mrad","MOA"].map(u=>(
+                    <button key={u} className={`pill${row.unit===u?" on":""}`}
+                      style={{flex:1,fontSize:8,padding:"4px 2px"}}
+                      onClick={()=>setTruingRows(prev=>prev.map(r=>r.id===row.id?{...r,unit:u}:r))}>
+                      {u}
+                    </button>
+                  ))}
+                </div>
+                {truingRows.length>1?(
+                  <span style={{color:RED,fontSize:14,cursor:"pointer",textAlign:"center"}}
+                    onClick={()=>setTruingRows(prev=>prev.filter(r=>r.id!==row.id))}>×</span>
+                ):<div/>}
+              </div>
+            ))}
+
+            <div style={{display:"flex",gap:8,marginBottom:10}}>
+              <button className="btn-out" style={{fontSize:9,flex:1}}
+                onClick={()=>setTruingRows(prev=>[...prev,{id:Date.now(),dist:150,dropMeas:null,unit:"mrad"}])}>
+                + AGGIUNGI DISTANZA
+              </button>
+              <button className="btn-prim" style={{fontSize:9,flex:1,background:CYN,color:"#020c04"}}
+                onClick={computeTruing}>
+                CALCOLA BC TRUATO
+              </button>
+            </div>
+
+            {truingMsg&&(
+              <div style={{fontSize:8,color:CYN,background:"rgba(0,212,255,.06)",
+                border:"1px solid rgba(0,212,255,.2)",padding:"8px 10px",lineHeight:1.8}}>
+                {truingMsg}
+              </div>
+            )}
+
+            {/* MV truing */}
+            <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(0,255,65,.08)"}}>
+              <div className="lbl" style={{marginBottom:6}}>TRUING MV — inserisci drop a zero noto</div>
+              <div style={{fontSize:8,color:"rgba(0,255,65,.35)",marginBottom:8,lineHeight:1.6}}>
+                Spara a distanza di zero, misura l'impatto reale vs aspettato.
+                Oppure usa il cronografo per MV diretta.
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <div style={{flex:1}}>
+                  <div className="lbl">MV MISURATA (m/s)</div>
+                  <input type="number" className="vg-in" step={1}
+                    placeholder={String(ammoData?.mv??320)}
+                    value={editingProfile.mvMs??""} 
+                    onChange={e=>setEditingProfile(p=>({...p,mvMs:e.target.value?+e.target.value:null}))}/>
+                </div>
+                {editingProfile.bcValue>0&&(
+                  <div style={{flex:1,textAlign:"center",padding:"8px",
+                    background:"rgba(0,212,255,.04)",border:"1px solid rgba(0,212,255,.15)"}}>
+                    <div className="lbl">BC TRUATO</div>
+                    <div className="orb" style={{fontSize:18,color:CYN}}>{editingProfile.bcValue}</div>
+                    <div style={{fontSize:7,color:"rgba(0,212,255,.4)"}}>G7 salvato</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div style={{display:"flex",gap:8,marginBottom:8}}>
             <button className="btn-prim" style={{flex:1,fontSize:11}} onClick={()=>{
               setProfiles(prev=>{
@@ -1762,7 +2012,8 @@ export default function App(){
         {ammoKey.split(" ").slice(0,2).join(" ")} · {dist}m → {sol?`${signU(sol.dropMoa)} ${unitLbl}`:"—"}
       </span>
       <span style={{color:"rgba(0,255,65,.25)",display:"flex",gap:5}}>
-        {bleConnected&&<span style={{color:CYN}}>◉BLE</span>}
+        {bleConnected&&<span style={{color:CYN}}>◉CAL</span>}
+        {kestrelConnected&&<span style={{color:CYN}}>◉KST</span>}
         {stageActive&&<span style={{color:AMB}}>S{tgtIdx+1}</span>}
         {shotDetect&&<span style={{color:RED}}>🎙</span>}
         {units==="imp"&&<span>IMP</span>}
