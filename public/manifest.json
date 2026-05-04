@@ -1,0 +1,11 @@
+{
+  "name": "V.E.G.A — Ballistic AI",
+  "short_name": "VEGA",
+  "start_url": "/vega-pwa/",
+  "scope": "/vega-pwa/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020c04",
+  "theme_color": "#00ff41",
+  "icons": [{"src": "/vega-pwa/vega.jpg","sizes": "512x512","type": "image/jpeg","purpose": "any maskable"}]
+}
