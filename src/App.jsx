@@ -973,11 +973,18 @@ export default function App(){
     const previewUrl=URL.createObjectURL(file)
     setCamPreview(previewUrl)
     try{
-      const {createWorker}=await import("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js")
-      // Tesseract.js v5: createWorker(langs[]) — no OEM param, no path options needed
-      const worker=await createWorker(["ita","eng"])
-      const {data:{text}}=await worker.recognize(file)
-      await worker.terminate()
+      // Carica Tesseract.js v4 UMD via script tag — più affidabile su PWA/GitHub Pages
+      // ESM v5 con dynamic import non riesce a risolvere i worker path da CDN
+      if(!window.Tesseract){
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script')
+          s.src='https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js'
+          s.onload=res
+          s.onerror=()=>rej(new Error('Tesseract CDN non raggiungibile — verifica connessione'))
+          document.head.appendChild(s)
+        })
+      }
+      const {data:{text}}=await window.Tesseract.recognize(file,'ita+eng',{logger:()=>{}})
       URL.revokeObjectURL(previewUrl)
       const stagesFound=parseMultiStageText(text)
       if(!stagesFound.length||!stagesFound[0].targets.length){setBleError("Nessuna distanza trovata nella foto");setCamPreview(null);return}
