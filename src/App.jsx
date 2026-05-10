@@ -783,15 +783,26 @@ export default function App(){
   const [shotThreshold, setShotThreshold] = useState(-25)
   const [audioDb,       setAudioDb]       = useState(-100)
   const [micReady,      setMicReady]      = useState(false)
+  // ── Bip detection (avvio timer da suono esterno) ──
+  const [bipDetect,     setBipDetect]     = useState(false)
+  const [bipThreshold,  setBipThreshold]  = useState(-30)
   const shotDetRef    = useRef(false)
   const shotThreshRef = useRef(-25)
+  const bipDetRef     = useRef(false)
+  const bipThreshRef  = useRef(-30)
   const audioCtxRef   = useRef(null)
   const audioSrcRef   = useRef(null)
   const rafRef        = useRef(null)
   const lastShotRef   = useRef(0)
   const lastDbRef     = useRef(0)
+  const lastBipRef    = useRef(0)
   useEffect(()=>{shotDetRef.current=shotDetect},[shotDetect])
   useEffect(()=>{shotThreshRef.current=shotThreshold},[shotThreshold])
+  useEffect(()=>{bipDetRef.current=bipDetect},[bipDetect])
+  useEffect(()=>{bipThreshRef.current=bipThreshold},[bipThreshold])
+  // ── Voice reset key ──
+  const [voiceKey, setVoiceKey] = useState(0)
+  const resetVoice = useCallback(()=>setVoiceKey(k=>k+1),[])
 
   // ── BLE Calypso ──
   const [bleConnected, setBleConnected] = useState(false)
@@ -895,7 +906,7 @@ export default function App(){
 
     // Nessun briefing vocale — l'atleta conosce già lo stage
     // Segnale minimo: solo il nome e il comando per partire
-    speak(`${stage.name}. Pronto. Di "parti" per iniziare.`,true)
+    speak(`${stage.name}. Pronto. Di "vai" per iniziare.`,true)
   },[speak,ttsU,ammoKey,scopeH,zeroM,bleConnected])
 
   // Attivazione effettiva dello stage ("go")
@@ -985,6 +996,9 @@ export default function App(){
         if(now-lastDbRef.current>100){lastDbRef.current=now;setAudioDb(Math.round(db))}
         if(shotDetRef.current&&db>shotThreshRef.current&&now-lastShotRef.current>800){
           lastShotRef.current=now; onShotFiredRef.current?.()
+        }
+        if(bipDetRef.current&&stagePendingRef.current&&db>bipThreshRef.current&&now-lastBipRef.current>1500){
+          lastBipRef.current=now; startStageRef.current?.()
         }
         rafRef.current=requestAnimationFrame(loop)
       }
@@ -1160,7 +1174,7 @@ export default function App(){
     const rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="it-IT"; recRef.current=rec
     // Regex permissivi — permettono punteggiatura iOS e parole extra brevi
     const DIRECT_NEXT  = /\b(next|avanti|vai)\b/i
-    const DIRECT_GO    = /\b(parti|go|inizia|start|pronti)\b/i // "parti" = avvia timer
+    const DIRECT_GO    = /\b(vai|parti|go|inizia|start|pronti)\b/i // "vai" avvia se pending
     const DIRECT_STOP  = /\b(stop|ferma)\b/i
     const DIRECT_SHOT  = /\b(colpo|sparo)\b/i
     const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
@@ -1194,7 +1208,7 @@ export default function App(){
           fireCmd("next",()=>{setVoiceFeed("▶ VAI"); advanceTargetRef.current?.()}); return
         }
         if(stagePendingRef.current && DIRECT_GO.test(itl) && itlLen<8){
-          fireCmd("go",()=>{setVoiceFeed("▶ PARTI"); startStageRef.current?.()}); return
+          fireCmd("go",()=>{setVoiceFeed("▶ VAI"); startStageRef.current?.()}); return
         }
         if(DIRECT_STOP.test(itl) && itlLen<8){
           fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()}); return
@@ -1204,7 +1218,7 @@ export default function App(){
         setVoiceTranscript("")
         const tl=final.toLowerCase().trim()
         if(stagePendingRef.current && DIRECT_GO.test(tl)){
-          fireCmd("go",()=>{setVoiceFeed("▶ PARTI"); startStageRef.current?.()}); return
+          fireCmd("go",()=>{setVoiceFeed("▶ VAI"); startStageRef.current?.()}); return
         }
         if(stageActiveRef.current && DIRECT_NEXT.test(tl)){
           fireCmd("next",()=>{setVoiceFeed("▶ VAI"); advanceTargetRef.current?.()}); return
@@ -1253,7 +1267,7 @@ export default function App(){
     }
     try{rec.start();setVoiceState("idle")}catch{setVoiceFeed("Mic N/D")}
     return()=>{clearTimeout(restartTimer);try{rec.stop()}catch{}}
-  },[handleVoiceCommand,speak])
+  },[handleVoiceCommand,speak,voiceKey])
 
   useEffect(()=>()=>{
     cancelAnimationFrame(rafRef.current)
@@ -1434,11 +1448,11 @@ export default function App(){
                   :voiceFeed}
         </div>
         <button
-          onClick={()=>{try{recRef.current?.stop()}catch{}}}
+          onClick={resetVoice}
           style={{background:"transparent",border:`1px solid ${dk?"rgba(0,255,65,.2)":"rgba(0,0,0,.15)"}`,
-            borderRadius:4,color:dk?"rgba(0,255,65,.5)":"#8E8E93",fontSize:7,padding:"2px 6px",
-            cursor:"pointer",flexShrink:0,letterSpacing:".05em",fontFamily:"'IBM Plex Mono',monospace"}}
-          title="Ripristina microfono">⟳ MIC</button>
+            borderRadius:4,color:dk?"rgba(0,255,65,.5)":"#8E8E93",fontSize:7,padding:"3px 8px",
+            cursor:"pointer",flexShrink:0,letterSpacing:".05em",fontFamily:"'IBM Plex Mono',monospace",minHeight:28}}
+          >⟳ MIC</button>
       </div>
     )}
 
@@ -1545,7 +1559,7 @@ export default function App(){
                       </div>
                     ))}
                   </div>
-                  <div style={{fontSize:6,color:CYN,marginTop:4}}>"parti" per iniziare</div>
+                  <div style={{fontSize:6,color:CYN,marginTop:4}}>"vai" per iniziare</div>
                 </div>
               ):(
                 <div style={{textAlign:"center",paddingTop:6}}>
@@ -2121,6 +2135,49 @@ export default function App(){
                 {!micReady&&<div style={{fontSize:8,color:AMB,marginTop:6}}>⚠ Autorizzazione microfono...</div>}
               </>
             )}
+          </div>
+
+          {/* Bip detection — avvio timer da suono */}
+          <div className="card">
+            <div className="lbl" style={{marginBottom:8}}>RILEVAMENTO BIP AVVIO TIMER</div>
+            <div style={{fontSize:8,color:grna(.4),marginBottom:8,lineHeight:1.5}}>
+              Avvia il timer automaticamente quando il mic rileva un suono (bip del timer, fischio, colpo). Lo stage deve essere caricato e in attesa.
+            </div>
+            <div className="toggle-wrap" style={{marginBottom:10}} onClick={()=>{setBipDetect(v=>!v);if(!micReady)startMic()}}>
+              <div className={`toggle-bg${bipDetect?" on":""}`}><div className="toggle-knob"/></div>
+              <span style={{fontSize:10,color:bipDetect?CYN:grna(.4)}}>
+                {bipDetect?"ATTIVO":"DISATTIVATO"}
+              </span>
+            </div>
+            {bipDetect&&(
+              <>
+                <div style={{marginBottom:8}}>
+                  <div className="lbl">SOGLIA ({bipThreshold} dB)</div>
+                  <input type="range" className="vg-range" min={-60} max={-5} value={bipThreshold}
+                    onChange={e=>setBipThreshold(+e.target.value)}/>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <span style={{fontSize:9,color:grna(.4),minWidth:34}}>{audioDb}dB</span>
+                  <DbMeter db={audioDb} threshold={bipThreshold}/>
+                </div>
+                {!micReady&&<div style={{fontSize:8,color:AMB,marginTop:6}}>⚠ Autorizzazione microfono...</div>}
+                <div style={{fontSize:8,color:CYN,marginTop:6}}>
+                  ● Carica uno stage → il timer parte al prossimo bip sopra soglia
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Microfono voce — reset */}
+          <div className="card">
+            <div className="lbl" style={{marginBottom:8}}>MICROFONO VOCALE</div>
+            <div style={{fontSize:8,color:grna(.4),marginBottom:10,lineHeight:1.5}}>
+              Se i comandi vocali non rispondono, usa il pulsante per reinizializzare il riconoscimento senza perdere dati.
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+              <div style={{flex:1,fontSize:9,color:grna(.5)}}>Stato: <span style={{color:T.grn}}>{voiceFeed||"idle"}</span></div>
+              <button className="btn-out" style={{fontSize:10,padding:"8px 16px"}} onClick={resetVoice}>⟳ RIPRISTINA MIC</button>
+            </div>
           </div>
         </>
       )}
