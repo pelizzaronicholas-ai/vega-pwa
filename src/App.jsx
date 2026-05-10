@@ -1309,6 +1309,10 @@ export default function App(){
     .ring-a{position:absolute;inset:0;border-radius:50%;border:1px solid ${grna(.48)};border-top-color:transparent;border-left-color:transparent;animation:cwSpin 5s linear infinite}
     .ring-b{position:absolute;inset:8px;border-radius:50%;border:1px dashed ${grna(.2)};animation:ccwSpin 9s linear infinite}
     .ring-c{position:absolute;inset:15px;border-radius:50%;border:1px solid ${grna(.3)};border-bottom-color:transparent;animation:cwSpin 3s linear infinite}
+    @keyframes numPop{0%{transform:scale(1)}40%{transform:scale(1.22);filter:brightness(1.5)}100%{transform:scale(1);filter:brightness(1)}}
+    .num-pop{animation:numPop .32s cubic-bezier(.36,.07,.19,.97)}
+    @keyframes slideInPanel{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
+    .panel-in{animation:slideInPanel .22s cubic-bezier(.25,.46,.45,.94)}
     ::-webkit-scrollbar{width:2px}::-webkit-scrollbar-thumb{background:${T.accentDim}}
     @media(min-width:600px){.widget-grid{grid-template-columns:1fr 1fr 1fr 1fr!important}}
   `}</style>
@@ -1417,7 +1421,7 @@ export default function App(){
     )}
 
     {/* ═══ CONTENUTO ═══ */}
-    <div className="scroll-panel" style={{animation:"fadeUp .2s ease"}}>
+    <div className={`scroll-panel${activePanel?" panel-in":""}`} key={activePanel||"home"} style={{animation:activePanel?"none":"fadeUp .2s ease"}}>
 
       {/* ═══ HOME — 4 Widget ═══ */}
       {mainTab==="home"&&!activePanel&&(
@@ -1428,9 +1432,9 @@ export default function App(){
             <Widget label="SOLUZIONE" color={T.grn} onClick={()=>setActivePanel("solver")} active={!!sol} badge={unit}>
               {sol?(
                 <div className={pulse?"pulse-sol":""} style={{textAlign:"center",width:"100%",paddingTop:6}}>
-                  <div className="orb" style={{fontSize:30,lineHeight:1,color:sol.dropMoa>=0?T.grn:AMB}}>{signU(sol.dropMoa)}</div>
+                  <div key={`drop-${tgtIdx}`} className="orb num-pop" style={{fontSize:30,lineHeight:1,color:sol.dropMoa>=0?T.grn:AMB}}>{signU(sol.dropMoa)}</div>
                   <div style={{fontSize:7,color:grna(.4),marginBottom:6}}>{unitLbl} ALZO</div>
-                  <div className="orb" style={{fontSize:18,color:Math.abs(sol.windMoa)>0.5?CYN:(dk?"rgba(0,255,65,.4)":CYN)}}>{signU(sol.windMoa)}</div>
+                  <div key={`wind-${tgtIdx}`} className="orb num-pop" style={{fontSize:18,color:Math.abs(sol.windMoa)>0.5?CYN:(dk?"rgba(0,255,65,.4)":CYN)}}>{signU(sol.windMoa)}</div>
                   <div style={{fontSize:7,color:"rgba(0,212,255,.4)",marginBottom:4}}>{unitLbl} VENTO</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:2,marginTop:4}}>
                     {[[dist+"m","dist"],[sol.tofMs+"ms","TOF"],
@@ -1521,15 +1525,31 @@ export default function App(){
 
             {/* WIDGET TIMER */}
             <Widget label="TIMER" color={timerColor} onClick={()=>setActivePanel("timer")} active={timerRunning}>
-              <div style={{textAlign:"center",paddingTop:6}}>
-                <div className="orb" style={{
-                  fontSize:28,color:timerColor,lineHeight:1,
-                  animation:timerLeft!==null&&timerLeft<=10?"timerWarn .5s ease-in-out infinite":"none",
-                }}>{fmtTime(timerLeft??timerSecs)}</div>
-                {timerRunning&&<div style={{fontSize:7,color:timerColor,marginTop:4,animation:"bleBlip 1s infinite"}}>IN CORSO</div>}
-                {!timerRunning&&timerLeft===null&&<div style={{fontSize:7,color:grna(.3),marginTop:4}}>{timerSecs}s</div>}
-                {shotDetect&&<div style={{fontSize:6,color:RED,marginTop:6}}>🎙 {audioDb}dB</div>}
-              </div>
+              {(()=>{
+                const R=38, C=2*Math.PI*R
+                const pct=timerRunning&&timerLeft!=null&&timerSecs>0
+                  ?Math.max(0,timerLeft/timerSecs):1
+                const offset=C*(1-pct)
+                return(
+                <div style={{textAlign:"center",position:"relative",display:"inline-block",width:90,height:90,marginTop:2}}>
+                  <svg width={90} height={90} style={{position:"absolute",top:0,left:0,transform:"rotate(-90deg)"}}>
+                    <circle cx={45} cy={45} r={R} fill="none" stroke={grna(.1)} strokeWidth={3}/>
+                    <circle cx={45} cy={45} r={R} fill="none" stroke={timerColor} strokeWidth={3}
+                      strokeDasharray={C} strokeDashoffset={offset}
+                      strokeLinecap="round"
+                      style={{transition:"stroke-dashoffset .9s linear,stroke .4s"}}/>
+                  </svg>
+                  <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+                    <div className="orb" style={{
+                      fontSize:22,color:timerColor,lineHeight:1,
+                      animation:timerLeft!=null&&timerLeft<=10?"timerWarn .5s ease-in-out infinite":"none",
+                    }}>{fmtTime(timerLeft??timerSecs)}</div>
+                    {timerRunning&&<div style={{fontSize:6,color:timerColor,marginTop:3,animation:"bleBlip 1s infinite"}}>IN CORSO</div>}
+                    {!timerRunning&&timerLeft===null&&<div style={{fontSize:6,color:grna(.3),marginTop:3}}>{timerSecs}s</div>}
+                  </div>
+                </div>
+              )})()}
+              {shotDetect&&<div style={{fontSize:6,color:RED,textAlign:"center",marginTop:2}}>🎙 {audioDb}dB</div>}
             </Widget>
 
             {/* WIDGET TRUING */}
