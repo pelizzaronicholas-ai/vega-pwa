@@ -84,14 +84,15 @@ function g7cd(m){
   return .12
 }
 
-function physSolve(dist, ammoKey, scopeH_cm, zeroM, wx={}){
+function physSolve(dist, ammoKey, scopeH_cm, zeroM, wx={}, dragFactor=1.0){
   const a=FLAT[ammoKey]; if(!a||dist<=0)return null
   const h=scopeH_cm/100, g=9.80665, dt=.002
   const tk=273.15+(wx.temp??15)
   const rhoAir=Math.exp(-(wx.alt??0)/8500)*(288.15/tk)*1.225
   const sos=331.3*Math.sqrt(tk/273.15)
   const mv=wx.mv??a.mv
-  const BC_SI=a.bc_g7*BC_CONV
+  // dragFactor>1 = più resistenza (bullet cade di più), <1 = meno resistenza
+  const BC_SI=(a.bc_g7/Math.max(0.1,dragFactor))*BC_CONV
 
   const fly=(ang,maxX)=>{
     let vx=mv*Math.cos(ang),vy=mv*Math.sin(ang),x=0,y=-h,t=0
@@ -304,6 +305,9 @@ const PROFILE_TEMPLATE = {
   useMvTempTable:false,
   mvTempTable:[],           // [{id,temp,mv}]
   dropScaleTable:[],        // [{id,dist,factor}]
+  // Truing
+  truingPoints:[],          // [{id,dist,measuredMrad,date,notes}]
+  useTruing:false,          // applica customDragFactor al solver
   notes:""
 }
 
@@ -1476,6 +1480,59 @@ export default function App(){
                 {shotDetect&&<div style={{fontSize:6,color:RED,marginTop:6}}>🎙 {audioDb}dB</div>}
               </div>
             </Widget>
+
+            {/* WIDGET TRUING */}
+            {(()=>{
+              const prof=activeProfile
+              const pts=(prof?.truingPoints||[]).filter(p=>p.measuredMrad!=null)
+              const nPts=pts.length
+              // calcola delta medio se ci sono punti
+              let meanDelta=null
+              if(nPts>0){
+                const deltas=pts.map(p=>{
+                  const s=physSolve(p.dist,ammoKey,scopeH,zeroM,wx,prof?.customDragFactor??1)
+                  if(!s)return null
+                  const pred=unit==="MOA"?s.dropMoa:s.dropMrad
+                  return p.measuredMrad-(unit==="MOA"?s.dropMoa:s.dropMrad)
+                }).filter(d=>d!==null)
+                meanDelta=deltas.length?deltas.reduce((a,b)=>a+b,0)/deltas.length:null
+              }
+              const hasTruing=prof?.useTruing&&prof?.customDragFactor&&prof.customDragFactor!==1
+              return(
+                <div style={{gridColumn:"1/-1"}}>
+                  <Widget label="TRUING" color={PRP} onClick={()=>setActivePanel("truing")}
+                    active={hasTruing} badge={nPts>0?`${nPts}pt`:null}>
+                    <div style={{width:"100%",paddingTop:4,paddingBottom:2}}>
+                      {nPts===0?(
+                        <div style={{textAlign:"center",color:"rgba(204,68,255,.35)",fontSize:9,padding:"6px 0"}}>
+                          Nessun punto misurato<br/>
+                          <span style={{fontSize:7,opacity:.7}}>Apri per inserire dati reali</span>
+                        </div>
+                      ):(
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4}}>
+                          <div style={{textAlign:"center"}}>
+                            <div className="orb" style={{fontSize:16,color:PRP}}>{nPts}</div>
+                            <div style={{fontSize:6,color:"rgba(204,68,255,.45)"}}>PUNTI</div>
+                          </div>
+                          <div style={{textAlign:"center"}}>
+                            <div className="orb" style={{fontSize:16,color:meanDelta!=null&&Math.abs(meanDelta)>0.3?AMB:PRP}}>
+                              {meanDelta!=null?(meanDelta>=0?"+":"")+meanDelta.toFixed(2):"—"}
+                            </div>
+                            <div style={{fontSize:6,color:"rgba(204,68,255,.45)"}}>Δ MEDIO {unit==="MOA"?"MOA":"mrad"}</div>
+                          </div>
+                          <div style={{textAlign:"center"}}>
+                            <div className="orb" style={{fontSize:16,color:hasTruing?PRP:"rgba(204,68,255,.3)"}}>
+                              {prof?.customDragFactor!=null?prof.customDragFactor.toFixed(3):"1.000"}
+                            </div>
+                            <div style={{fontSize:6,color:"rgba(204,68,255,.45)"}}>DRAG F.</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </Widget>
+                </div>
+              )
+            })()}
           </div>
 
           {/* Range card rapida */}
@@ -1925,6 +1982,126 @@ export default function App(){
         </>
       )}
 
+      {/* ═══ PANNELLO TRUING ═══ */}
+      {mainTab==="home"&&activePanel==="truing"&&(()=>{
+        const prof=activeProfile
+        if(!prof)return <div className="card" style={{textAlign:"center",padding:30,color:"rgba(204,68,255,.4)"}}>Nessun profilo attivo</div>
+        const pts=(prof.truingPoints||[]).filter(p=>p.measuredMrad!=null&&p.dist>0)
+        // Calcola predicted per ogni punto
+        const rows=pts.map(p=>{
+          const s=physSolve(p.dist,ammoKey,scopeH,zeroM,wx,1.0)
+          const pred=s?(unit==="MOA"?s.dropMoa:s.dropMrad):null
+          const meas=unit==="MOA"?p.measuredMrad*3.4377:p.measuredMrad
+          const delta=pred!=null?+(meas-pred).toFixed(3):null
+          return{...p,pred,meas:+meas.toFixed(3),delta}
+        }).sort((a,b)=>a.dist-b.dist)
+        // Calcola drag factor ottimale (metodo ratio medio)
+        const ratios=rows.filter(r=>r.pred&&r.pred>0.01).map(r=>r.meas/r.pred)
+        const suggestedDf=ratios.length?+(ratios.reduce((a,b)=>a+b,0)/ratios.length).toFixed(4):1.0
+        const meanDelta=rows.filter(r=>r.delta!=null).length
+          ? +(rows.filter(r=>r.delta!=null).map(r=>r.delta).reduce((a,b)=>a+b,0)/rows.filter(r=>r.delta!=null).length).toFixed(3)
+          : null
+        const unitL=unit==="MOA"?"MOA":"mrad"
+        return(
+          <>
+            <div className="card" style={{background:"rgba(204,68,255,.04)",border:"1px solid rgba(204,68,255,.2)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div>
+                  <div className="orb" style={{fontSize:12,color:PRP,letterSpacing:".15em"}}>TRUING</div>
+                  <div style={{fontSize:7,color:"rgba(204,68,255,.5)",marginTop:2}}>{prof.name} · {prof.caliber}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:7,color:"rgba(204,68,255,.4)"}}>DRAG FACTOR ATTIVO</div>
+                  <div className="orb" style={{fontSize:18,color:prof.useTruing&&prof.customDragFactor!==1?PRP:"rgba(204,68,255,.3)"}}>{(prof.customDragFactor??1).toFixed(4)}</div>
+                </div>
+              </div>
+              {meanDelta!=null&&(
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginTop:4}}>
+                  {[
+                    ["Δ MEDIO",meanDelta>=0?"+"+meanDelta.toFixed(3):meanDelta.toFixed(3),Math.abs(meanDelta)<0.1?T.grn:Math.abs(meanDelta)<0.3?AMB:RED],
+                    ["DRAG F. CALC.",suggestedDf.toFixed(4),PRP],
+                    ["PUNTI",pts.length,T.grn],
+                  ].map(([l,v,c])=>(
+                    <div key={l} style={{background:"rgba(204,68,255,.04)",border:"1px solid rgba(204,68,255,.1)",padding:"6px 4px",textAlign:"center",borderRadius:4}}>
+                      <div style={{fontSize:5,color:"rgba(204,68,255,.45)",letterSpacing:".1em"}}>{l}</div>
+                      <div className="orb" style={{fontSize:13,color:c,marginTop:2}}>{v}</div>
+                      <div style={{fontSize:5,color:"rgba(204,68,255,.3)"}}>{l==="Δ MEDIO"?unitL:""}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Tabella punti */}
+            <div className="card">
+              <div className="lbl" style={{marginBottom:6}}>PUNTI MISURATI vs PREVISTO</div>
+              {rows.length===0?(
+                <div style={{textAlign:"center",padding:"20px 0",color:"rgba(204,68,255,.3)",fontSize:9}}>
+                  Nessun punto truing nel profilo.<br/>
+                  <span style={{fontSize:7}}>Aggiungi punti dalla scheda PROFILO → sezione TRUING</span>
+                </div>
+              ):(
+                <>
+                  {/* Header */}
+                  <div style={{display:"grid",gridTemplateColumns:"44px 1fr 1fr 1fr 36px",gap:3,marginBottom:4}}>
+                    {["DIST","PREV.","MIS.","Δ",""].map(h=>(
+                      <div key={h} style={{fontSize:5,color:"rgba(204,68,255,.4)",textAlign:"center",letterSpacing:".08em"}}>{h}</div>
+                    ))}
+                  </div>
+                  {rows.map(r=>(
+                    <div key={r.id} style={{display:"grid",gridTemplateColumns:"44px 1fr 1fr 1fr 36px",gap:3,
+                      padding:"6px 4px",marginBottom:2,borderRadius:3,
+                      background:r.delta!=null&&Math.abs(r.delta)>0.3?"rgba(255,170,0,.04)":"rgba(204,68,255,.02)",
+                      border:`1px solid ${r.delta!=null&&Math.abs(r.delta)>0.5?"rgba(255,51,68,.3)":r.delta!=null&&Math.abs(r.delta)>0.2?"rgba(255,170,0,.25)":"rgba(204,68,255,.1)"}`}}>
+                      <div className="orb" style={{fontSize:11,color:PRP,textAlign:"center"}}>{r.dist}m</div>
+                      <div className="orb" style={{fontSize:11,color:"rgba(204,68,255,.6)",textAlign:"center"}}>{r.pred!=null?r.pred.toFixed(3):"—"}</div>
+                      <div className="orb" style={{fontSize:11,color:T.grn,textAlign:"center"}}>{r.meas.toFixed(3)}</div>
+                      <div className="orb" style={{fontSize:11,textAlign:"center",
+                        color:r.delta==null?"rgba(204,68,255,.3)":Math.abs(r.delta)<0.1?T.grn:Math.abs(r.delta)<0.3?AMB:RED}}>
+                        {r.delta!=null?(r.delta>=0?"+":"")+r.delta.toFixed(3):"—"}
+                      </div>
+                      <div style={{fontSize:7,color:"rgba(204,68,255,.4)",textAlign:"center",alignSelf:"center"}}>{unitL}</div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+
+            {/* Azioni */}
+            {rows.length>0&&suggestedDf!==1&&(
+              <div className="card" style={{background:"rgba(204,68,255,.04)",border:"1px solid rgba(204,68,255,.2)"}}>
+                <div className="lbl" style={{marginBottom:6}}>CALCOLO TRUING</div>
+                <div style={{fontSize:9,color:"rgba(204,68,255,.55)",lineHeight:1.6,marginBottom:10}}>
+                  Basato su {rows.filter(r=>r.pred).length} punti misurati.<br/>
+                  Drag factor calcolato: <span className="orb" style={{color:PRP}}>{suggestedDf.toFixed(4)}</span><br/>
+                  Attuale: <span className="orb" style={{color:"rgba(204,68,255,.5)"}}>{(prof.customDragFactor??1).toFixed(4)}</span>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button style={{flex:1,padding:"12px 8px",background:"rgba(204,68,255,.15)",
+                    border:"1px solid rgba(204,68,255,.5)",color:PRP,fontFamily:"Orbitron,monospace",
+                    fontSize:9,letterSpacing:".1em",cursor:"pointer",borderRadius:4}}
+                    onClick={()=>{
+                      setProfiles(prev=>prev.map(p=>{
+                        if(p.id!==prof.id)return p
+                        return{...p,customDragFactor:suggestedDf,useTruing:true}
+                      }))
+                      speak(`Drag factor applicato: ${suggestedDf.toFixed(3)}`,true)
+                    }}>APPLICA DRAG FACTOR</button>
+                  {prof.useTruing&&(
+                    <button style={{padding:"12px 10px",background:"transparent",
+                      border:"1px solid rgba(255,51,68,.3)",color:RED,fontFamily:"Orbitron,monospace",
+                      fontSize:9,cursor:"pointer",borderRadius:4}}
+                      onClick={()=>{
+                        setProfiles(prev=>prev.map(p=>p.id===prof.id?{...p,customDragFactor:1.0,useTruing:false}:p))
+                      }}>RESET</button>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )
+      })()}
+
       {/* ═══ TAB PROFILI ═══ */}
       {mainTab==="profiles"&&!activePanel&&(
         <>
@@ -2346,6 +2523,71 @@ export default function App(){
                 fontFamily:"'IBM Plex Mono',monospace",fontSize:11,cursor:"pointer",
                 letterSpacing:".08em",minHeight:44}}>
               + AGGIUNGI FATTORE
+            </button>
+          </div>
+
+          {/* ── Truing Points ── */}
+          <div style={CARD}>
+            <div style={HDR}>
+              <span>TRUING</span>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:8,color:"rgba(204,68,255,.5)"}}>Usa drag factor</span>
+                <div className="toggle-wrap" onClick={()=>setEditingProfile(p=>({...p,useTruing:!p.useTruing}))}>
+                  <div className={`toggle-bg${ep.useTruing?" on":""}`}><div className="toggle-knob"/></div>
+                </div>
+              </div>
+            </div>
+            {ep.useTruing&&(
+              <div style={{marginBottom:10,padding:"8px 10px",background:"rgba(204,68,255,.06)",
+                border:"1px solid rgba(204,68,255,.2)",borderRadius:6}}>
+                <div style={{fontSize:8,color:"rgba(204,68,255,.5)",marginBottom:4}}>DRAG FACTOR</div>
+                <input type="number" step="0.001" min="0.5" max="2.0" style={{...IN,fontSize:14}}
+                  value={ep.customDragFactor??1.0}
+                  onChange={e=>setEditingProfile(p=>({...p,customDragFactor:+e.target.value}))}/>
+                <div style={{fontSize:7,color:"rgba(204,68,255,.4)",marginTop:4}}>
+                  1.000 = nessuna correzione · &gt;1 = più caduta · &lt;1 = meno caduta<br/>
+                  Usa il pannello TRUING (home) per calcolarlo automaticamente.
+                </div>
+              </div>
+            )}
+            <div style={{fontSize:8,color:"rgba(204,68,255,.45)",marginBottom:8}}>
+              Inserisci le correzioni REALI misurate sul campo per ogni distanza ({unit==="MOA"?"MOA":"mrad"})
+            </div>
+            {/* Header tabella */}
+            {(ep.truingPoints||[]).length>0&&(
+              <div style={{display:"grid",gridTemplateColumns:"52px 1fr 1fr 28px",gap:4,marginBottom:4}}>
+                {["DIST","ALZO MIS.","DATA",""].map(h=>(
+                  <div key={h} style={{fontSize:6,color:"rgba(204,68,255,.4)",letterSpacing:".08em"}}>{h}</div>
+                ))}
+              </div>
+            )}
+            {(ep.truingPoints||[]).map(row=>(
+              <div key={row.id} style={{display:"grid",gridTemplateColumns:"52px 1fr 1fr 28px",gap:4,marginBottom:6}}>
+                <input type="number" style={{...IN,textAlign:"center"}} placeholder="m"
+                  value={row.dist||""}
+                  onChange={e=>setEditingProfile(p=>({...p,truingPoints:p.truingPoints.map(r=>r.id===row.id?{...r,dist:+e.target.value}:r)}))}/>
+                <input type="number" step="0.001" style={{...IN,textAlign:"center"}} placeholder={unit==="MOA"?"MOA":"mrad"}
+                  value={row.measuredMrad??""}
+                  onChange={e=>setEditingProfile(p=>({...p,truingPoints:p.truingPoints.map(r=>r.id===row.id?{...r,measuredMrad:+e.target.value}:r)}))}/>
+                <input type="date" style={{...IN,fontSize:10}}
+                  value={row.date||""}
+                  onChange={e=>setEditingProfile(p=>({...p,truingPoints:p.truingPoints.map(r=>r.id===row.id?{...r,date:e.target.value}:r)}))}/>
+                <button style={{background:"transparent",border:"1px solid rgba(255,51,68,.3)",color:RED,
+                  borderRadius:4,cursor:"pointer",fontSize:14,lineHeight:1}}
+                  onClick={()=>setEditingProfile(p=>({...p,truingPoints:p.truingPoints.filter(r=>r.id!==row.id)}))}>×</button>
+              </div>
+            ))}
+            {(ep.truingPoints||[]).length===0&&(
+              <div style={{textAlign:"center",padding:"12px 0",color:"rgba(204,68,255,.25)",fontSize:8}}>
+                Nessun punto inserito
+              </div>
+            )}
+            <button style={{width:"100%",padding:"10px",background:"rgba(204,68,255,.08)",
+              border:"1px solid rgba(204,68,255,.3)",color:PRP,fontFamily:"Orbitron,monospace",
+              fontSize:9,letterSpacing:".1em",cursor:"pointer",borderRadius:4,marginTop:4}}
+              onClick={()=>setEditingProfile(p=>({...p,truingPoints:[...(p.truingPoints||[]),
+                {id:Date.now(),dist:100,measuredMrad:null,date:new Date().toISOString().slice(0,10),notes:""}]}))}>
+              + AGGIUNGI PUNTO
             </button>
           </div>
 
