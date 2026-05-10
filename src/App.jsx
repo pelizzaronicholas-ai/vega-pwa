@@ -184,76 +184,90 @@ function parseStageText(txt){
 
 // Parser PRS: estrae lettera→distanza e costruisce passi per posizione
 function parsePRSChunk(chunk, stageNum, baseId){
+  // Normalizza OCR: collassa spazi multipli, normalizza trattini e apostrofi
+  const txt=chunk.replace(/[–—]/g,"-").replace(/[''`]/g,"'")
   // ── Nome ──
-  const nmM=chunk.match(/Stage\s+\d+[-–—\s]*([^T\n]{1,50})(?:TEMPO)?/i)
-  const name=nmM?nmM[1].replace(/\s+/g," ").trim().replace(/[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ ''\-–]/g,"").trim():`Stage ${stageNum}`
+  const nmM=txt.match(/Stage\s+\d+[-\s]*([^\n]{1,60})(?:TEMPO|$)/i)
+  const name=nmM?nmM[1].replace(/\s+/g," ").trim().replace(/[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ '\-]/g,"").trim():`Stage ${stageNum}`
   // ── Parametri ──
-  const par=+(chunk.match(/TEMPO[:\s"]*(\d+)/i)||[0,90])[1]
-  const colpi=+(chunk.match(/COLPI[:\s]*(\d+)/i)||[0,0])[1]
-  const nPos=+(chunk.match(/POSIZIONI[:\s]*(\d+)/i)||[0,1])[1]
-  // ── Mappa lettera→distanza dalla sezione BERSAGLI ──
+  const par=+(txt.match(/TEMPO[:\s"']*(\d+)/i)||[0,90])[1]
+  const colpiTot=+(txt.match(/COLPI[:\s]*(\d+)/i)||[0,0])[1]
+  const nPos=+(txt.match(/POSIZIONI[:\s]*(\d+)/i)||[0,1])[1]
+  // ── Mappa lettera→distanza (singola lettera seguita da "NNm") ──
   const distMap={}
-  for(const m of chunk.matchAll(/([A-Z]):\s*(\d{2,4})m/g)) distMap[m[1]]=+m[2]
-  // ── Costruisci steps ──
+  for(const m of txt.matchAll(/\b([A-Z])\s*:\s*(\d{2,4})\s*m/g)){
+    const k=m[1].toUpperCase()
+    // Esclude false match come T(EMPO), C(OLPI), P(OSIZIONI), S(TAGE)
+    if(!'TCPS'.includes(k)) distMap[k]=+m[2]
+  }
+  // ── Istruzioni complete stage (per briefing TTS) ──
+  let instrText=""
+  const instrM=txt.match(/(?:Da|Per|Ad)\s+ogni\s+posizione\s*:?\s*([\s\S]*?)(?=BERSAGLI\s*B|Stage\s+\d|$)/i)
+  if(instrM) instrText=instrM[1].replace(/\s+/g," ").trim()
+  // ── Costruisci targets ──
   let targets=[]
-  // Cerca "Posizione N[,:]" espliciti
-  const posLines=[...chunk.matchAll(/Posizione\s+([A-Z0-9R]+)[,:\s]+([^\n]{5,120})/gi)]
+  // Metodo 1: "Posizione N: istruzione" espliciti
+  const posLines=[...txt.matchAll(/Posizione\s+([A-Z0-9]+)[,:\s]+([^\n]{5,120})/gi)]
   if(posLines.length>0){
     for(const m of posLines){
-      const posLabel=`Posizione ${m[1]}`
       const instr=m[2].trim()
-      const berM=instr.match(/bersaglio\s+([A-Z])/i)
+      const berM=instr.match(/bersaglio\s+([A-Za-z])/i)
       const shotsM=instr.match(/(\d+)\s*colp/i)
       const berL=berM?berM[1].toUpperCase():null
       const dist=berL&&distMap[berL]?distMap[berL]:null
       if(!dist)continue
-      const shots=shotsM?+shotsM[1]:1
-      targets.push({id:targets.length+1,pos:posLabel,berLabel:berL,dist,shots,step:instr})
+      targets.push({id:targets.length+1,pos:`Posizione ${m[1]}`,berLabel:berL,dist,shots:shotsM?+shotsM[1]:1,step:instr})
     }
   }
-  // "Da/Per ogni posizione" → estrai blocco istruzione, poi spacca per bersaglio
-  if(!targets.length){
-    const secM=chunk.match(/(?:Da|Per)\s+ogni\s+posizione[:\s]*\n?([\s\S]*?)(?:BERSAGLI|$)/i)
-    const instrText=secM?secM[1].trim():""
-    // Spacca per occorrenze di "bersaglio X" (possono essere inline su una riga sola)
-    const bRe=/bersaglio\s+([A-Z])[^.;,\n]*?(\d+)\s*colp[^\n;,.]*/gi
-    const inlineHits=[...instrText.matchAll(bRe)]
-    if(inlineHits.length>0){
+  // Metodo 2: "Da ogni posizione: N colpi sul bersaglio X"
+  if(!targets.length && instrText){
+    // Pattern A: "N colpi su[l]/a bersaglio X"
+    const pA=/(\d+)\s*colp[a-z]*\s+su[a-z]*\s+bersaglio\s+([A-Za-z])/gi
+    // Pattern B: "bersaglio X ... N colpi"
+    const pB=/bersaglio\s+([A-Za-z])[^.]*?(\d+)\s*colp/gi
+    const hitsA=[...instrText.matchAll(pA)]
+    const hitsB=[...instrText.matchAll(pB)]
+    if(hitsA.length>0){
       for(let p=1;p<=Math.max(nPos,1);p++){
-        for(const m of inlineHits){
-          const berL=m[1].toUpperCase()
-          const dist=distMap[berL]
-          if(!dist)continue
-          const shots=+m[2]
-          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:m[0].trim()})
+        for(const m of hitsA){
+          const shots=+m[1], berL=m[2].toUpperCase()
+          const dist=distMap[berL]; if(!dist)continue
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:instrText.slice(0,120)})
         }
       }
-    }else{
-      // Fallback: cerca "N colpi su/bersaglio X" in qualsiasi forma
-      const bRe2=/(?:(\d+)\s*colp[a-z]*\s+su[l]?\s+bersaglio|bersaglio)\s+([A-Z])/gi
-      for(const m of instrText.matchAll(bRe2)){
-        const berL=(m[2]||m[1]).toUpperCase()
-        const dist=distMap[berL]; if(!dist)continue
-        const shots=+(instrText.match(/(\d+)\s*colp/i)||[0,1])[1]
-        for(let p=1;p<=Math.max(nPos,1);p++){
-          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:instrText.slice(0,80)})
+    } else if(hitsB.length>0){
+      for(let p=1;p<=Math.max(nPos,1);p++){
+        for(const m of hitsB){
+          const berL=m[1].toUpperCase(), shots=+m[2]
+          const dist=distMap[berL]; if(!dist)continue
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:instrText.slice(0,120)})
+        }
+      }
+    } else if(Object.keys(distMap).length>0){
+      // Fallback: nPos posizioni × distMap × colpi calcolati
+      const shotsPerPos=nPos>0&&colpiTot>0?Math.round(colpiTot/nPos):1
+      for(let p=1;p<=Math.max(nPos,1);p++){
+        for(const[berL,dist] of Object.entries(distMap)){
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots:shotsPerPos,step:instrText||`Bersaglio ${berL} a ${dist}m`})
         }
       }
     }
   }
-  // Fallback: usa distMap direttamente
-  if(!targets.length){
-    Object.entries(distMap).forEach(([l,d],i)=>
-      targets.push({id:i+1,pos:"Prono",berLabel:l,dist:d,shots:1,step:`Bersaglio ${l} a ${d}m`}))
+  // Metodo 3: distMap diretta (fallback finale)
+  if(!targets.length && Object.keys(distMap).length>0){
+    const shotsEach=nPos>0&&colpiTot>0?Math.round(colpiTot/nPos):colpiTot||1
+    for(let p=1;p<=Math.max(nPos,1);p++){
+      Object.entries(distMap).forEach(([l,d])=>
+        targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:l,dist:d,shots:shotsEach,step:instrText||`Bersaglio ${l} a ${d}m`}))
+    }
   }
   if(!targets.length) return null
   return{
-    id:baseId+stageNum,
-    stageNum,
+    id:baseId+stageNum, stageNum,
     name:`Stage ${stageNum} — ${name}`,
-    desc:`${colpi||targets.reduce((s,t)=>s+t.shots,0)} colpi · ${nPos} posizioni`,
-    par,
-    targets
+    desc:`${colpiTot||targets.reduce((s,t)=>s+t.shots,0)} colpi · ${nPos} posizioni`,
+    par, targets,
+    instructions: instrText.slice(0,400) // istruzioni complete per briefing vocale
   }
 }
 
@@ -261,8 +275,8 @@ function parsePRSChunk(chunk, stageNum, baseId){
 function parseMultiStageText(txt){
   const hdrRe=/(Stage\s+\d+[^\n]{0,80}(?:TEMPO)?)/gi
   const matches=[...txt.matchAll(hdrRe)]
+  const base=Date.now()
   if(matches.length>=2){
-    const base=Date.now()
     const stages=[]
     for(let i=0;i<matches.length;i++){
       const start=matches[i].index
@@ -275,6 +289,16 @@ function parseMultiStageText(txt){
     }
     if(stages.length>=2)return stages
   }
+  // Stage singolo: prova parsePRSChunk prima del fallback semplice
+  if(matches.length===1){
+    const stageNumM=matches[0][0].match(/(\d+)/)
+    const stageNum=stageNumM?+stageNumM[1]:1
+    const parsed=parsePRSChunk(txt,stageNum,base)
+    if(parsed&&parsed.targets.length)return[parsed]
+  }
+  // Nessun header Stage N trovato: tenta comunque il parser PRS su tutto il testo
+  const fallbackPRS=parsePRSChunk(txt,1,base)
+  if(fallbackPRS&&fallbackPRS.targets.length)return[fallbackPRS]
   return[parseStageText(txt)]
 }
 
@@ -810,6 +834,11 @@ export default function App(){
       setTimeout(()=>speak(`Bersaglio ${s.berLabel||s.id}, ${s.dist} metri: alza ${ttsU(s.dropMoa??0)}${wt}.`),delay)
       delay+=1600
     })
+    // Istruzioni stage (se presenti da OCR)
+    if(stage.instructions){
+      setTimeout(()=>speak(stage.instructions,false),delay)
+      delay+=Math.min(stage.instructions.length*55, 7000)
+    }
     // Fine briefing: attendi "go"
     setTimeout(()=>speak('Stage pronto. Di "go" per iniziare.',true),delay)
   },[speak,ttsU,ammoKey,scopeH,zeroM,bleConnected])
@@ -1819,11 +1848,12 @@ export default function App(){
             {(()=>{
               // Quando c'è una gara importata, mostra solo gli stage importati (id>5)
               // I 5 builtin si nascondono per non confondersi con quelli della gara
-              const libStages = gara ? stages.filter(s=>s.id>5) : stages
+              const hasImported = stages.some(s=>s.id>5)
+              const libStages = hasImported ? stages.filter(s=>s.id>5) : stages
               return(<>
             <div className="lbl" style={{marginBottom:8}}>
               STAGE LIBRARY — {libStages.length}
-              {gara&&<span style={{color:"rgba(204,68,255,.5)",marginLeft:6,fontSize:6}}>· GARA ATTIVA (builtin nascosti)</span>}
+              {hasImported&&<span style={{color:"rgba(204,68,255,.5)",marginLeft:6,fontSize:6}}>· STAGE IMPORTATI (builtin nascosti)</span>}
             </div>
             {libStages.map(s=>(
               <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
