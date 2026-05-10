@@ -309,8 +309,17 @@ function parseMultiStageText(txt){
       const chunk=txt.slice(start,end)
       const stageNumM=matches[i][0].match(/(\d+)/)
       const stageNum=stageNumM?+stageNumM[1]:i+1
-      const parsed=parsePRSChunk(chunk,stageNum,base)
-      if(parsed)stages.push(parsed)
+      let parsed=parsePRSChunk(chunk,stageNum,base)
+      // Rescue: anche se parsePRSChunk non trova bersagli, salva lo stage come placeholder
+      if(!parsed){
+        const par=+(chunk.match(/TEMPO\s*[.:\-]?\s*"?\s*(\d+)/i)||[0,90])[1]
+        const colpiTot=+(chunk.match(/COLPI\s*[.:\-]?\s*(\d+)/i)||[0,0])[1]
+        const nmM2=chunk.match(/Stage\s+\d+[-\s]*([^\n]{1,60})/i)
+        const nm2=nmM2?nmM2[1].replace(/\s+/g," ").trim():`Stage ${stageNum}`
+        parsed={id:base+stageNum,stageNum,name:`Stage ${stageNum} — ${nm2}`,
+                desc:`${colpiTot} colpi (bersagli non rilevati)`,par,targets:[],instructions:""}
+      }
+      stages.push(parsed)
     }
     if(stages.length>=2)return stages
   }
@@ -769,14 +778,9 @@ export default function App(){
   const speakTarget = useCallback((stage, idx, wx_)=>{
     const t=stage.targets[idx]; if(!t)return
     const s=physSolve(t.dist,ammoKeyRef.current,scopeHRef.current,zeroMRef.current,wx_||wxRef.current)
-    const wt=s&&Math.abs(s.windMoa)>0.2?`, deriva ${ttsU(s.windMoa)}`:""
-    // Se il target ha un'istruzione PRS usa quella, altrimenti formato generico
-    const instr=t.step&&t.step!==`Bersaglio a ${t.dist}m`?t.step:null
-    if(instr){
-      speak(`${t.pos}. ${instr}. ${t.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
-    }else{
-      speak(`${t.pos}. Bersaglio ${t.id}, ${t.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
-    }
+    const wt=s&&Math.abs(s.windMoa??0)>0.2?`, deriva ${ttsU(s.windMoa)}`:""
+    // Durante stage attivo: solo posizione + bersaglio + torretta (niente istruzioni verbose)
+    speak(`${t.pos}. Bersaglio ${t.berLabel||t.id}, ${t.dist} metri. Alza ${ttsU(s?.dropMoa??0)}${wt}.`,true)
   },[speak,ttsU])
 
   const advanceTarget = useCallback(()=>{
@@ -926,9 +930,20 @@ export default function App(){
     const stage=stageRef.current; if(!stage)return
     setStagePending(false); stagePendingRef.current=false
     setStageActive(true)
-    startTimer(stage.par)
-    setTimeout(()=>speakTarget(stage,0,wxRef.current),400)
-  },[speakTarget,startTimer])
+    // Ripete briefing rapido delle posizioni, poi avvia timer e annuncia prima posizione
+    let delay=0
+    if(stage.targets.length>0){
+      stage.targets.forEach((t,i)=>{
+        const shots=t.shots>1?`, ${t.shots} colpi`:""
+        setTimeout(()=>speak(`${t.pos}, bersaglio ${t.berLabel||t.id}${shots}.`,i===0),delay)
+        delay+=900
+      })
+    }
+    setTimeout(()=>{
+      startTimer(stage.par)
+      speakTarget(stage,0,wxRef.current)
+    },delay)
+  },[speak,speakTarget,startTimer])
   useEffect(()=>{startStageRef.current=startStage},[startStage])
 
   // ── Mic / shot detection ──
