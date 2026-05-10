@@ -974,11 +974,8 @@ export default function App(){
     setCamPreview(previewUrl)
     try{
       const {createWorker}=await import("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js")
-      const worker=await createWorker("ita+eng",1,{
-        workerPath:"https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
-        corePath:"https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-lstm.wasm.js",
-        logger:()=>{},
-      })
+      // Tesseract.js v5: createWorker(langs[]) — no OEM param, no path options needed
+      const worker=await createWorker(["ita","eng"])
       const {data:{text}}=await worker.recognize(file)
       await worker.terminate()
       URL.revokeObjectURL(previewUrl)
@@ -1023,7 +1020,7 @@ export default function App(){
     }
 
     // ── "next" / "prossimo" — solo avanza bersaglio/posizione dentro lo stage ──
-    if(/^(next|prossimo|avanza|via)$/.test(t.trim())){
+    if(/^(next|prossimo|avanza|via|vai)$/.test(t.trim())){
       if(stageActive){advanceTarget();return}
       speak("Nessuno stage attivo",true); return
     }
@@ -1070,8 +1067,9 @@ export default function App(){
     if(!SR){setVoiceFeed("Voce: usa Chrome/Edge");return}
     const rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="it-IT"; recRef.current=rec
     // Regex permissivi — permettono punteggiatura iOS e parole extra brevi
-    const DIRECT_NEXT  = /\b(next|avanti)\b/i
-    const DIRECT_GO    = /\b(go|vai|inizia|start|pronti|fuoco)\b/i
+    const DIRECT_NEXT  = /\b(next|avanti|vai)\b/i      // vai = avanza posizione
+    const DIRECT_GO    = /\b(go|inizia|start|pronti|fuoco)\b/i // go = parte cronometro
+    const DIRECT_STOP  = /\b(stop|ferma)\b/i            // stop = ferma cronometro
     const DIRECT_SHOT  = /\b(colpo|sparo)\b/i
     // "stage uno/1" ... "stage dieci/10" — numeri in lettere italiane
     const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
@@ -1094,13 +1092,18 @@ export default function App(){
       if(interim){
         setVoiceTranscript(interim)
         const itl=interim.toLowerCase()
-        // Interim fast-path: risposta immediata per next e go (parola singola riconosciuta)
-        if(stageActiveRef.current && DIRECT_NEXT.test(itl) && itl.replace(/[^a-zàèéìòù]/gi,"").length<8){
-          fireCmd("next",()=>{setVoiceFeed("▶ NEXT"); onShotFiredRef.current?.()})
+        const itlLen=itl.replace(/[^a-zàèéìòù]/gi,"").length
+        // Interim fast-path: risposta immediata per parole singole
+        if(stageActiveRef.current && DIRECT_NEXT.test(itl) && itlLen<8){
+          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); onShotFiredRef.current?.()})
           return
         }
-        if(stagePendingRef.current && DIRECT_GO.test(itl) && itl.replace(/[^a-zàèéìòù]/gi,"").length<8){
+        if(stagePendingRef.current && DIRECT_GO.test(itl) && itlLen<8){
           fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()})
+          return
+        }
+        if(DIRECT_STOP.test(itl) && itlLen<8){
+          fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()})
           return
         }
       }
@@ -1113,7 +1116,10 @@ export default function App(){
           fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()}); return
         }
         if(stageActiveRef.current && DIRECT_NEXT.test(tl)){
-          fireCmd("next",()=>{setVoiceFeed("▶ NEXT"); onShotFiredRef.current?.()}); return
+          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); onShotFiredRef.current?.()}); return
+        }
+        if(DIRECT_STOP.test(tl)){
+          fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()}); return
         }
         if(stageActiveRef.current && DIRECT_SHOT.test(tl)){
           fireCmd("shot",()=>{setVoiceFeed("◉ COLPO"); onShotFiredRef.current?.()}); return
@@ -1803,8 +1809,16 @@ export default function App(){
           )}
 
           <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>STAGE LIBRARY — {stages.length}</div>
-            {stages.map(s=>(
+            {(()=>{
+              // Quando c'è una gara importata, mostra solo gli stage importati (id>5)
+              // I 5 builtin si nascondono per non confondersi con quelli della gara
+              const libStages = gara ? stages.filter(s=>s.id>5) : stages
+              return(<>
+            <div className="lbl" style={{marginBottom:8}}>
+              STAGE LIBRARY — {libStages.length}
+              {gara&&<span style={{color:"rgba(204,68,255,.5)",marginLeft:6,fontSize:6}}>· GARA ATTIVA (builtin nascosti)</span>}
+            </div>
+            {libStages.map(s=>(
               <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
                 padding:"10px",border:`1px solid ${currentStage?.id===s.id?"rgba(255,170,0,.4)":"rgba(0,255,65,.1)"}`,
                 background:currentStage?.id===s.id?"rgba(255,170,0,.04)":"transparent",
@@ -1820,6 +1834,8 @@ export default function App(){
                 </div>
               </div>
             ))}
+            </>)
+            })()}
           </div>
           <div className="card">
             <div className="lbl" style={{marginBottom:8}}>IMPORTA STAGE</div>
