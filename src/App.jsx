@@ -1115,12 +1115,13 @@ export default function App(){
     // "stage uno/1" ... "stage dieci/10" — numeri in lettere italiane
     const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
     const DIRECT_STAGE = /\bstage\s+(\d+|uno|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)\b/i
-    // Deduplication: evita doppio trigger interim+final
+    // Deduplication: evita doppio trigger interim+final (700ms = abbastanza per bloccare
+    // il risultato finale dopo l'interim, ma permette "vai" consecutivi rapidi)
     let lastCmd=""; let lastCmdTs=0
 
     const fireCmd=(cmd, fn)=>{
       const now=Date.now()
-      if(cmd===lastCmd&&now-lastCmdTs<1500)return // già eseguito
+      if(cmd===lastCmd&&now-lastCmdTs<700)return // già eseguito
       lastCmd=cmd; lastCmdTs=now; fn()
     }
 
