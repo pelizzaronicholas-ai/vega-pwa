@@ -895,7 +895,7 @@ export default function App(){
 
     // Nessun briefing vocale — l'atleta conosce già lo stage
     // Segnale minimo: solo il nome e il comando per partire
-    speak(`${stage.name}. Pronto. Di "go" per iniziare.`,true)
+    speak(`${stage.name}. Pronto. Di "parti" per iniziare.`,true)
   },[speak,ttsU,ammoKey,scopeH,zeroM,bleConnected])
 
   // Attivazione effettiva dello stage ("go")
@@ -1159,21 +1159,25 @@ export default function App(){
     if(!SR){setVoiceFeed("Voce: usa Chrome/Edge");return}
     const rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="it-IT"; recRef.current=rec
     // Regex permissivi — permettono punteggiatura iOS e parole extra brevi
-    const DIRECT_NEXT  = /\b(next|avanti|vai)\b/i      // vai = avanza posizione
-    const DIRECT_GO    = /\b(go|inizia|start|pronti|fuoco)\b/i // go = parte cronometro
-    const DIRECT_STOP  = /\b(stop|ferma)\b/i            // stop = ferma cronometro
+    const DIRECT_NEXT  = /\b(next|avanti|vai)\b/i
+    const DIRECT_GO    = /\b(parti|go|inizia|start|pronti)\b/i // "parti" = avvia timer
+    const DIRECT_STOP  = /\b(stop|ferma)\b/i
     const DIRECT_SHOT  = /\b(colpo|sparo)\b/i
-    // "stage uno/1" ... "stage dieci/10" — numeri in lettere italiane
     const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
     const DIRECT_STAGE = /\bstage\s+(\d+|uno|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)\b/i
-    // Deduplication: evita doppio trigger interim+final (700ms = abbastanza per bloccare
-    // il risultato finale dopo l'interim, ma permette "vai" consecutivi rapidi)
-    let lastCmd=""; let lastCmdTs=0
 
+    let lastCmd=""; let lastCmdTs=0
     const fireCmd=(cmd, fn)=>{
       const now=Date.now()
-      if(cmd===lastCmd&&now-lastCmdTs<700)return // già eseguito
+      if(cmd===lastCmd&&now-lastCmdTs<700)return
       lastCmd=cmd; lastCmdTs=now; fn()
+    }
+
+    // Restart robusto: piccolo backoff dopo errore, evita loop
+    let restartTimer=null; let errored=false
+    const scheduleRestart=(delay=120)=>{
+      clearTimeout(restartTimer)
+      restartTimer=setTimeout(()=>{try{rec.start()}catch{}},delay)
     }
 
     rec.onresult=e=>{
@@ -1186,30 +1190,24 @@ export default function App(){
         setVoiceTranscript(interim)
         const itl=interim.toLowerCase()
         const itlLen=itl.replace(/[^a-zàèéìòù]/gi,"").length
-        // Interim fast-path: risposta immediata per parole singole
         if(stageActiveRef.current && DIRECT_NEXT.test(itl) && itlLen<8){
-          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); advanceTargetRef.current?.()})
-          return
+          fireCmd("next",()=>{setVoiceFeed("▶ VAI"); advanceTargetRef.current?.()}); return
         }
         if(stagePendingRef.current && DIRECT_GO.test(itl) && itlLen<8){
-          fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()})
-          return
+          fireCmd("go",()=>{setVoiceFeed("▶ PARTI"); startStageRef.current?.()}); return
         }
         if(DIRECT_STOP.test(itl) && itlLen<8){
-          fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()})
-          return
+          fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()}); return
         }
       }
       if(final){
         setVoiceTranscript("")
         const tl=final.toLowerCase().trim()
-
-        // ── FAST PATH ──
         if(stagePendingRef.current && DIRECT_GO.test(tl)){
-          fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()}); return
+          fireCmd("go",()=>{setVoiceFeed("▶ PARTI"); startStageRef.current?.()}); return
         }
         if(stageActiveRef.current && DIRECT_NEXT.test(tl)){
-          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); advanceTargetRef.current?.()}); return
+          fireCmd("next",()=>{setVoiceFeed("▶ VAI"); advanceTargetRef.current?.()}); return
         }
         if(DIRECT_STOP.test(tl)){
           fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()}); return
@@ -1217,7 +1215,6 @@ export default function App(){
         if(stageActiveRef.current && DIRECT_SHOT.test(tl)){
           fireCmd("shot",()=>{setVoiceFeed("◉ COLPO"); onShotFiredRef.current?.()}); return
         }
-        // "stage N" → carica stage N dalla gara (durante gara, con o senza stage attivo)
         if(garaRef.current){
           const sm=tl.match(DIRECT_STAGE)
           if(sm){
@@ -1233,8 +1230,6 @@ export default function App(){
             return
           }
         }
-
-        // ── NORMAL FLOW: wake word "Vega" ──
         if(wakePendRef.current){
           setWakePending(false);wakePendRef.current=false
           clearTimeout(wakeTimeoutRef.current);setVoiceState("idle")
@@ -1247,10 +1242,17 @@ export default function App(){
         }
       }
     }
-    rec.onerror=e=>{if(e.error!=="no-speech")setVoiceFeed("Mic: "+e.error)}
-    rec.onend=()=>{try{rec.start()}catch{}}
+    rec.onerror=e=>{
+      if(e.error==="no-speech"||e.error==="aborted")return
+      errored=true
+      setVoiceFeed("Mic: "+e.error)
+    }
+    rec.onend=()=>{
+      scheduleRestart(errored?600:120)
+      errored=false
+    }
     try{rec.start();setVoiceState("idle")}catch{setVoiceFeed("Mic N/D")}
-    return()=>{try{rec.stop()}catch{}}
+    return()=>{clearTimeout(restartTimer);try{rec.stop()}catch{}}
   },[handleVoiceCommand,speak])
 
   useEffect(()=>()=>{
@@ -1420,15 +1422,23 @@ export default function App(){
         borderBottom:`1px solid ${stageActive?"rgba(255,170,0,.15)":stagePending?"rgba(0,212,255,.15)":T.hdrBorder}`,
         background:stageActive?(dk?"rgba(10,6,0,.9)":"rgba(255,170,0,.06)"):stagePending?(dk?"rgba(0,8,12,.95)":"rgba(0,212,255,.06)"):T.voiceBarBg,
         color:stageActive?AMB:stagePending?CYN:T.textDim}}>
-        {voiceTranscript
-          ?<span style={{color:CYN}}>{voiceTranscript}</span>
-          :stageActive
-            ?<span>Di <b style={{color:AMB}}>"next"</b> per colpo / avanzare</span>
-            :stagePending
-              ?<span style={{animation:"bleBlip 1s infinite"}}>Di <b style={{color:CYN}}>"go"</b> per avviare timer e iniziare</span>
-              :gara&&!stageActive
-                ?<span>Di <b style={{color:PRP}}>"stage {gara.currentIdx+1}"</b> per iniziare</span>
-                :voiceFeed}
+        <div style={{flex:1}}>
+          {voiceTranscript
+            ?<span style={{color:CYN}}>{voiceTranscript}</span>
+            :stageActive
+              ?<span>Di <b style={{color:AMB}}>"vai"</b> per avanzare</span>
+              :stagePending
+                ?<span style={{animation:"bleBlip 1s infinite"}}>Di <b style={{color:CYN}}>"parti"</b> per avviare</span>
+                :gara&&!stageActive
+                  ?<span>Di <b style={{color:PRP}}>"stage {gara.currentIdx+1}"</b> per iniziare</span>
+                  :voiceFeed}
+        </div>
+        <button
+          onClick={()=>{try{recRef.current?.stop()}catch{}}}
+          style={{background:"transparent",border:`1px solid ${dk?"rgba(0,255,65,.2)":"rgba(0,0,0,.15)"}`,
+            borderRadius:4,color:dk?"rgba(0,255,65,.5)":"#8E8E93",fontSize:7,padding:"2px 6px",
+            cursor:"pointer",flexShrink:0,letterSpacing:".05em",fontFamily:"'IBM Plex Mono',monospace"}}
+          title="Ripristina microfono">⟳ MIC</button>
       </div>
     )}
 
@@ -1444,7 +1454,7 @@ export default function App(){
         </div>
         <button className="btn-prim" style={{fontSize:12,padding:"10px 20px",background:CYN,color:"#001820",
           fontWeight:900,letterSpacing:".15em",animation:"bleBlip .8s infinite"}}
-          onClick={startStage}>GO</button>
+          onClick={startStage}>PARTI</button>
         <button className="btn-out red" style={{fontSize:10,padding:"8px 10px"}}
           onClick={()=>{setStagePending(false);stagePendingRef.current=false;stageRef.current=null;setCurrentStage(null);speak("Annullato")}}>■</button>
       </div>
@@ -1535,7 +1545,7 @@ export default function App(){
                       </div>
                     ))}
                   </div>
-                  <div style={{fontSize:6,color:CYN,marginTop:4}}>"go" per iniziare</div>
+                  <div style={{fontSize:6,color:CYN,marginTop:4}}>"parti" per iniziare</div>
                 </div>
               ):(
                 <div style={{textAlign:"center",paddingTop:6}}>
