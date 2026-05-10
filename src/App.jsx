@@ -5,13 +5,10 @@ import vegaImg from '../public/vega.jpg'
 // PALETTE & COSTANTI
 // ═══════════════════════════════════════════════════════════════
 const GRN="#00ff41", AMB="#ffaa00", CYN="#00d4ff", RED="#ff3344", PRP="#cc44ff"
+let _GRN=GRN // aggiornato da App ad ogni render per i sub-componenti fuori da App
 const BC_CONV = 703.07
 const CALYPSO_SERVICE = "0000fd00-0000-1000-8000-00805f9b34fb"
 const CALYPSO_WIND_CH = "0000fd01-0000-1000-8000-00805f9b34fb"
-
-// Kestrel 5700 Elite — Nordic UART Service
-const KESTREL_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-const KESTREL_TX_CH   = "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // notify
 
 // ═══════════════════════════════════════════════════════════════
 // CATALOGO MUNIZIONI
@@ -75,28 +72,6 @@ const G7T=[
   [1.5,.3440],[1.6,.3315],[1.7,.3209],[1.8,.3117],[1.9,.3042],
   [2.0,.2980],[2.5,.2709],[3.0,.2470],[4.0,.2104],[5.0,.1832],
 ]
-// Tabella drag G1 — usata per rimfire e proiettili dichiarati in G1
-const G1T=[
-  [0,.2629],[.05,.2558],[.1,.2487],[.15,.2413],[.2,.2344],[.25,.2278],
-  [.3,.2214],[.35,.2155],[.4,.2104],[.45,.2061],[.5,.2032],[.55,.202],
-  [.6,.2034],[.65,.2165],[.7,.2534],[.725,.2983],[.75,.3678],[.775,.4732],
-  [.8,.6502],[.825,.8726],[.85,1.0],[.875,.9908],[.9,.9297],[.925,.8752],
-  [.95,.8483],[.975,.8101],[1.0,.7756],[1.025,.7451],[1.05,.7283],
-  [1.1,.7101],[1.2,.6889],[1.3,.6649],[1.4,.6432],[1.5,.6251],
-  [1.6,.6100],[1.8,.5860],[2.0,.5692],[2.5,.5483],[3.0,.5323],[5.0,.4900],
-]
-function g1cd(m){
-  if(m<=G1T[0][0])return G1T[0][1]
-  if(m>=G1T[G1T.length-1][0])return G1T[G1T.length-1][1]
-  for(let i=0;i<G1T.length-1;i++){
-    if(m>=G1T[i][0]&&m<=G1T[i+1][0]){
-      const f=(m-G1T[i][0])/(G1T[i+1][0]-G1T[i][0])
-      return G1T[i][1]+f*(G1T[i+1][1]-G1T[i][1])
-    }
-  }
-  return .26
-}
-
 function g7cd(m){
   if(m<=G7T[0][0])return G7T[0][1]
   if(m>=G7T[G7T.length-1][0])return G7T[G7T.length-1][1]
@@ -109,25 +84,20 @@ function g7cd(m){
   return .12
 }
 
-function physSolve(dist, ammoKey, scopeH_cm, zeroM, wx={}, profile=null){
+function physSolve(dist, ammoKey, scopeH_cm, zeroM, wx={}){
   const a=FLAT[ammoKey]; if(!a||dist<=0)return null
   const h=scopeH_cm/100, g=9.80665, dt=.002
   const tk=273.15+(wx.temp??15)
   const rhoAir=Math.exp(-(wx.alt??0)/8500)*(288.15/tk)*1.225
   const sos=331.3*Math.sqrt(tk/273.15)
-  // MV: usa cronografo > profilo custom > tabellare
-  const mv=wx.mv??profile?.mvMs??a.mv
-  // BC: usa valore truato dal profilo se disponibile, altrimenti catalogo
-  const bcVal = (profile?.bcValue>0) ? profile.bcValue : a.bc_g7
-  // Sempre G7 — il truing BC porta il modello G7 a matchare i dati reali
-  const BC_SI = bcVal*BC_CONV
-  const cdFn  = g7cd
+  const mv=wx.mv??a.mv
+  const BC_SI=a.bc_g7*BC_CONV
 
   const fly=(ang,maxX)=>{
     let vx=mv*Math.cos(ang),vy=mv*Math.sin(ang),x=0,y=-h,t=0
     const acc=(vx2,vy2)=>{
       const v=Math.sqrt(vx2*vx2+vy2*vy2); if(v<1)return[vx2,vy2,0,-g]
-      const drag=rhoAir*v*v*cdFn(v/sos)/(2*BC_SI)
+      const drag=rhoAir*v*v*g7cd(v/sos)/(2*BC_SI)
       return[vx2,vy2,-drag*vx2/v,-g-drag*vy2/v]
     }
     while(x<maxX+2&&t<8){
@@ -197,36 +167,162 @@ const U = {
 // localStorage profili
 const KEY_PROFILES = "vega_profiles_v1"
 const KEY_SETTINGS = "vega_settings_v1"
-function loadProfiles(){try{return JSON.parse(localStorage.getItem(KEY_PROFILES)||"[]")}catch{return[]}}
+function loadProfiles(){try{const s=localStorage.getItem(KEY_PROFILES);if(!s)return[SK_GIALLE_PROFILE];return JSON.parse(s)||[]}catch{return[SK_GIALLE_PROFILE]}}
 function saveProfiles(p){try{localStorage.setItem(KEY_PROFILES,JSON.stringify(p))}catch{}}
 function loadSettings(){try{return JSON.parse(localStorage.getItem(KEY_SETTINGS)||"{}")}catch{return{}}}
 function saveSettings(s){try{localStorage.setItem(KEY_SETTINGS,JSON.stringify(s))}catch{}}
 
+// Parser singolo stage (fallback generico)
 function parseStageText(txt){
   const dists=[...txt.matchAll(/(\d{2,4})\s*m(?:etri|t)?\b/gi)].map(m=>+m[1]).filter(d=>d>=25&&d<=2500)
   const fall=dists.length?dists:[...txt.matchAll(/\b(\d{2,4})\b/g)].map(m=>+m[1]).filter(d=>d>=50&&d<=1500)
-  const pm=txt.match(/(\d+)\s*(?:secondi|sec\b|s\b)/i)
-  return{id:Date.now(),name:"Stage testo",desc:`${[...new Set(fall)].length} bersagli`,par:pm?+pm[1]:90,
-    targets:[...new Set(fall)].map((d,i)=>({id:i+1,dist:d,shots:1,pos:"Prono"}))}
+  const pm=txt.match(/TEMPO[:\s]*(\d+)/i)||txt.match(/(\d+)\s*(?:secondi|sec\b)/i)
+  return{id:Date.now(),name:"Stage",desc:`${[...new Set(fall)].length} bersagli`,par:pm?+pm[1]:90,
+    targets:[...new Set(fall)].map((d,i)=>({id:i+1,dist:d,shots:1,pos:"Prono",step:`Bersaglio a ${d}m`}))}
+}
+
+// Parser PRS: estrae lettera→distanza e costruisce passi per posizione
+function parsePRSChunk(chunk, stageNum, baseId){
+  // ── Nome ──
+  const nmM=chunk.match(/Stage\s+\d+[-–—\s]*([^T\n]{1,50})(?:TEMPO)?/i)
+  const name=nmM?nmM[1].replace(/\s+/g," ").trim().replace(/[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ ''\-–]/g,"").trim():`Stage ${stageNum}`
+  // ── Parametri ──
+  const par=+(chunk.match(/TEMPO[:\s"]*(\d+)/i)||[0,90])[1]
+  const colpi=+(chunk.match(/COLPI[:\s]*(\d+)/i)||[0,0])[1]
+  const nPos=+(chunk.match(/POSIZIONI[:\s]*(\d+)/i)||[0,1])[1]
+  // ── Mappa lettera→distanza dalla sezione BERSAGLI ──
+  const distMap={}
+  for(const m of chunk.matchAll(/([A-Z]):\s*(\d{2,4})m/g)) distMap[m[1]]=+m[2]
+  // ── Costruisci steps ──
+  let targets=[]
+  // Cerca "Posizione N[,:]" espliciti
+  const posLines=[...chunk.matchAll(/Posizione\s+([A-Z0-9R]+)[,:\s]+([^\n]{5,120})/gi)]
+  if(posLines.length>0){
+    for(const m of posLines){
+      const posLabel=`Posizione ${m[1]}`
+      const instr=m[2].trim()
+      const berM=instr.match(/bersaglio\s+([A-Z])/i)
+      const shotsM=instr.match(/(\d+)\s*colp/i)
+      const berL=berM?berM[1].toUpperCase():null
+      const dist=berL&&distMap[berL]?distMap[berL]:null
+      if(!dist)continue
+      const shots=shotsM?+shotsM[1]:1
+      targets.push({id:targets.length+1,pos:posLabel,berLabel:berL,dist,shots,step:instr})
+    }
+  }
+  // "Da/Per ogni posizione" → estrai blocco istruzione, poi spacca per bersaglio
+  if(!targets.length){
+    const secM=chunk.match(/(?:Da|Per)\s+ogni\s+posizione[:\s]*\n?([\s\S]*?)(?:BERSAGLI|$)/i)
+    const instrText=secM?secM[1].trim():""
+    // Spacca per occorrenze di "bersaglio X" (possono essere inline su una riga sola)
+    const bRe=/bersaglio\s+([A-Z])[^.;,\n]*?(\d+)\s*colp[^\n;,.]*/gi
+    const inlineHits=[...instrText.matchAll(bRe)]
+    if(inlineHits.length>0){
+      for(let p=1;p<=Math.max(nPos,1);p++){
+        for(const m of inlineHits){
+          const berL=m[1].toUpperCase()
+          const dist=distMap[berL]
+          if(!dist)continue
+          const shots=+m[2]
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:m[0].trim()})
+        }
+      }
+    }else{
+      // Fallback: cerca "N colpi su/bersaglio X" in qualsiasi forma
+      const bRe2=/(?:(\d+)\s*colp[a-z]*\s+su[l]?\s+bersaglio|bersaglio)\s+([A-Z])/gi
+      for(const m of instrText.matchAll(bRe2)){
+        const berL=(m[2]||m[1]).toUpperCase()
+        const dist=distMap[berL]; if(!dist)continue
+        const shots=+(instrText.match(/(\d+)\s*colp/i)||[0,1])[1]
+        for(let p=1;p<=Math.max(nPos,1);p++){
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:instrText.slice(0,80)})
+        }
+      }
+    }
+  }
+  // Fallback: usa distMap direttamente
+  if(!targets.length){
+    Object.entries(distMap).forEach(([l,d],i)=>
+      targets.push({id:i+1,pos:"Prono",berLabel:l,dist:d,shots:1,step:`Bersaglio ${l} a ${d}m`}))
+  }
+  if(!targets.length) return null
+  return{
+    id:baseId+stageNum,
+    stageNum,
+    name:`Stage ${stageNum} — ${name}`,
+    desc:`${colpi||targets.reduce((s,t)=>s+t.shots,0)} colpi · ${nPos} posizioni`,
+    par,
+    targets
+  }
+}
+
+// Punto di ingresso: divide il testo in chunk per stage e li parsa
+function parseMultiStageText(txt){
+  const hdrRe=/(Stage\s+\d+[^\n]{0,80}(?:TEMPO)?)/gi
+  const matches=[...txt.matchAll(hdrRe)]
+  if(matches.length>=2){
+    const base=Date.now()
+    const stages=[]
+    for(let i=0;i<matches.length;i++){
+      const start=matches[i].index
+      const end=i+1<matches.length?matches[i+1].index:txt.length
+      const chunk=txt.slice(start,end)
+      const stageNumM=matches[i][0].match(/(\d+)/)
+      const stageNum=stageNumM?+stageNumM[1]:i+1
+      const parsed=parsePRSChunk(chunk,stageNum,base)
+      if(parsed)stages.push(parsed)
+    }
+    if(stages.length>=2)return stages
+  }
+  return[parseStageText(txt)]
 }
 
 const PROFILE_TEMPLATE = {
-  id:0, name:"", caliber:".22LR", barrelLengthIn:20,
-  twistNum:1, twistDen:16,
+  id:0, name:"", caliber:".22LR",
+  // Bullet Data
+  bulletName:"", bulletWeightGr:0, bulletDiaMm:0, bulletLengthMm:0,
+  bcModel:"G1",             // "G1" | "G7"
+  bcValue:0, customDragFactor:1.0,
+  // Gun Data
+  mvMs:null,
+  zeroM:50,
+  scopeHeightCm:6.5,
+  twistCm:40.64, twistDir:"R",   // twist rate in cm, direction R/L
+  barrelLengthIn:20,
+  // Ammo catalog (solver)
   ammoGroup:"RIMFIRE", ammoKey:".22LR Lapua SLR",
-  // Dati proiettile custom (sovrascrivono catalogo se compilati)
-  bulletName:"", bulletWeightGr:0, bulletDiaMm:0,
-  bcModel:"G7",  // "G7" | "G1"
-  bcValue:0, mvMs:null,
-  // Ottica
+  // Scope
+  scopeUnit:"MRAD",         // "MRAD" | "MOA"
   scopeName:"", scopePlane:"FFP",
-  scopeHeightCm:6.5, zoomMin:6, zoomMax:36,
-  reticleType:"mrad",  // "mrad" | "MOA" | "ibrido"
-  clickValue:0.1,
-  // Reticolo - hash marks principali
-  reticleHash:1.0,   // distanza tra hash (mrad o MOA)
-  reticleSubHash:0.5, // sub-divisioni
-  zeroM:50, notes:""
+  zoomMin:6, zoomMax:36,
+  reticleType:"mrad", clickValue:0.1,
+  reticleHash:1.0, reticleSubHash:0.5,
+  // Advanced
+  zeroHeightCm:0, zeroOffsetCm:0,
+  ssfElevation:1.0, ssfWindage:1.0,
+  // MV-Temp Table
+  useMvTempTable:false,
+  mvTempTable:[],           // [{id,temp,mv}]
+  dropScaleTable:[],        // [{id,dist,factor}]
+  notes:""
+}
+
+const SK_GIALLE_PROFILE = {
+  ...PROFILE_TEMPLATE,
+  id:1, name:"SK gialle", caliber:".22LR",
+  bulletName:"SK Standard Plus", bulletWeightGr:40.0, bulletDiaMm:5.69, bulletLengthMm:12.19,
+  bcModel:"G1", bcValue:0.131, customDragFactor:1.0,
+  mvMs:326.1, zeroM:50, scopeHeightCm:6.5,
+  twistCm:40.64, twistDir:"R",
+  ammoGroup:"RIMFIRE", ammoKey:".22LR Lapua SLR",
+  scopeUnit:"MRAD", reticleType:"mrad",
+  useMvTempTable:true,
+  mvTempTable:[
+    {id:1,temp:26,mv:330.1},
+    {id:2,temp:23,mv:327.1},
+    {id:3,temp:18,mv:331.9},
+    {id:4,temp:15,mv:326.1},
+  ],
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -295,7 +391,7 @@ function StageProgress({targets, currentIdx}){
       {targets.map((t,i)=>(
         <div key={t.id} style={{
           width:i===currentIdx?16:8, height:4,
-          background:i<currentIdx?"rgba(0,255,65,.4)":i===currentIdx?GRN:"rgba(0,255,65,.12)",
+          background:i<currentIdx?"rgba(0,255,65,.4)":i===currentIdx?_GRN:"rgba(0,255,65,.12)",
           transition:"all .3s", borderRadius:1}}/>
       ))}
     </div>
@@ -308,7 +404,7 @@ function DbMeter({db, threshold}){
   return(
     <div style={{flex:1,height:6,background:"rgba(0,255,65,.08)",borderRadius:2,position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",left:0,top:0,height:"100%",width:pct+"%",
-        background:db>threshold?RED:GRN,transition:"width .05s"}}/>
+        background:db>threshold?RED:_GRN,transition:"width .05s"}}/>
       <div style={{position:"absolute",top:0,left:tPct+"%",height:"100%",width:1,background:AMB}}/>
     </div>
   )
@@ -341,7 +437,7 @@ function MVPanel({mvList, onAdd, onRemove, onApply, appliedMv}){
             {[["N",mvList.length,""],["MEDIA",avg?.toFixed(1),"m/s"],["SD",sd?.toFixed(1)??"—","m/s"]].map(([l,v,u])=>(
               <div key={l} style={{textAlign:"center",padding:"5px",background:"rgba(0,255,65,.025)",border:"1px solid rgba(0,255,65,.07)"}}>
                 <div style={{fontSize:7,color:"rgba(0,255,65,.4)",letterSpacing:".1em"}}>{l}</div>
-                <div style={{fontFamily:"Orbitron,monospace",fontSize:14,color:GRN}}>{v}</div>
+                <div style={{fontFamily:"Orbitron,monospace",fontSize:14,color:_GRN}}>{v}</div>
                 <div style={{fontSize:7,color:"rgba(0,255,65,.3)"}}>{u}</div>
               </div>
             ))}
@@ -412,6 +508,9 @@ export default function App(){
 
   const goHome = useCallback(()=>{setMainTab("home");setActivePanel(null)},[])
 
+  // ── Tema ──
+  const [theme, setTheme] = useState(()=>loadSettings().theme??"dark") // "dark" | "light"
+
   // ── Unità ──
   const [units, setUnits] = useState(()=>loadSettings().units??"metric") // "metric" | "imp"
 
@@ -450,8 +549,8 @@ export default function App(){
 
   // ── Salva settings quando cambiano ──
   useEffect(()=>{
-    saveSettings({units, unit, audio})
-  },[units, unit, audio])
+    saveSettings({units, unit, audio, theme})
+  },[units, unit, audio, theme])
 
   // ── Profili ──
   const [profiles, setProfiles] = useState(()=>loadProfiles())
@@ -498,7 +597,7 @@ export default function App(){
   useEffect(()=>{distRef.current=dist},[dist])
 
   useEffect(()=>{
-    const r=physSolve(dist,ammoKey,scopeH,zeroM,wx,activeProfile??null)
+    const r=physSolve(dist,ammoKey,scopeH,zeroM,wx)
     setSol(r); setPulse(true)
     const t=setTimeout(()=>setPulse(false),300)
     return()=>clearTimeout(t)
@@ -507,7 +606,7 @@ export default function App(){
   useEffect(()=>{
     const isRim=ammoGroup==="RIMFIRE"
     const steps=isRim?[25,50,75,100,125,150,175,200,225,250]:[50,100,150,200,300,400,500,600,700,800]
-    setRangeCard(steps.map(d=>({dist:d,...(physSolve(d,ammoKey,scopeH,zeroM,wx,activeProfile??null)||{})})))
+    setRangeCard(steps.map(d=>({dist:d,...(physSolve(d,ammoKey,scopeH,zeroM,wx)||{})})))
   },[ammoKey,ammoGroup,scopeH,zeroM,wx])
 
   // ── Geolocation ──
@@ -520,17 +619,28 @@ export default function App(){
   },[])
 
   // ── Stage ──
-  const [stages,       setStages]       = useState(STAGES_BUILTIN)
-  const [stageActive,  setStageActive]  = useState(false)
-  const [currentStage, setCurrentStage] = useState(null)
-  const [tgtIdx,       setTgtIdx]       = useState(0)
-  const [shotsLeft,    setShotsLeft]    = useState(0)
-  const [stageSols,    setStageSols]    = useState([])
+  const [stages,        setStages]        = useState(STAGES_BUILTIN)
+  const [stageActive,   setStageActive]   = useState(false)
+  const [stagePending,  setStagePending]  = useState(false) // caricato, in attesa di "go"
+  const [currentStage,  setCurrentStage]  = useState(null)
+  const [tgtIdx,        setTgtIdx]        = useState(0)
+  const [shotsLeft,     setShotsLeft]     = useState(0)
+  const [stageSols,     setStageSols]     = useState([])
+  const stagePendingRef = useRef(false)
+  useEffect(()=>{stagePendingRef.current=stagePending},[stagePending])
   const [pdfLoading,   setPdfLoading]   = useState(false)
+  const [camLoading,   setCamLoading]   = useState(false)
+  const [camPreview,   setCamPreview]   = useState(null)
   const [stageMsg,     setStageMsg]     = useState("")
-  const stageRef    = useRef(null)
-  const tgtIdxRef   = useRef(0)
-  const shotsLeftRef= useRef(0)
+  // Gara (competizione multi-stage)
+  const [gara,         setGara]         = useState(null) // {id,name,stages:[],currentIdx:0}
+  const [garaActive,   setGaraActive]   = useState(false)
+  const garaRef = useRef(null)
+  const stageRef       = useRef(null)
+  const stageActiveRef = useRef(false)
+  const tgtIdxRef      = useRef(0)
+  const shotsLeftRef   = useRef(0)
+  useEffect(()=>{stageActiveRef.current=stageActive},[stageActive])
   const curTarget = currentStage?.targets[tgtIdx]
   const curSol = curTarget?physSolve(curTarget.dist,ammoKey,scopeH,zeroM,wx):null
 
@@ -573,20 +683,9 @@ export default function App(){
   const [bleName,      setBleName]      = useState("")
   const [bleError,     setBleError]     = useState("")
   const bleDevRef  = useRef(null)
-  // Kestrel 5700 Elite BLE
-  const [kestrelConnected, setKestrelConnected] = useState(false)
-  const [kestrelName,      setKestrelName]      = useState("")
-  const kestrelDevRef = useRef(null)
 
   // ── MV manuale ──
   const [mvList, setMvList] = useState([])
-
-  // Truing — misure reali per BC truing
-  const [truingRows, setTruingRows] = useState([
-    {id:1,dist:100,dropMeas:null,unit:"mrad"},
-  ])
-  const [truingMv, setTruingMv] = useState(null)
-  const [truingMsg, setTruingMsg] = useState("")
 
   // ── Voice ──
   const [voiceState,      setVoiceState]      = useState("idle")
@@ -614,16 +713,35 @@ export default function App(){
     const t=stage.targets[idx]; if(!t)return
     const s=physSolve(t.dist,ammoKeyRef.current,scopeHRef.current,zeroMRef.current,wx_||wxRef.current)
     const wt=s&&Math.abs(s.windMoa)>0.2?`, deriva ${ttsU(s.windMoa)}`:""
-    speak(`${t.pos}. Bersaglio ${t.id}, ${t.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
+    // Se il target ha un'istruzione PRS usa quella, altrimenti formato generico
+    const instr=t.step&&t.step!==`Bersaglio a ${t.dist}m`?t.step:null
+    if(instr){
+      speak(`${t.pos}. ${instr}. ${t.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
+    }else{
+      speak(`${t.pos}. Bersaglio ${t.id}, ${t.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
+    }
   },[speak,ttsU])
 
   const advanceTarget = useCallback(()=>{
     const stage=stageRef.current; if(!stage)return
     const nextIdx=tgtIdxRef.current+1
     if(nextIdx>=stage.targets.length){
-      speak("Stage completato. Ottimo lavoro.",true)
       setStageActive(false); setCurrentStage(null); stageRef.current=null
       setTgtIdx(0); setShotsLeft(0); tgtIdxRef.current=0; shotsLeftRef.current=0
+      const g=garaRef.current
+      if(g){
+        const nextStageIdx=g.currentIdx+1
+        if(nextStageIdx<g.stages.length){
+          speak(`Stage ${g.currentIdx+1} completato. Prossimo: ${g.stages[nextStageIdx].name}. Di "stage ${nextStageIdx+1}" per iniziare.`,true)
+          const ng={...g,currentIdx:nextStageIdx}
+          garaRef.current=ng; setGara(ng)
+        }else{
+          speak(`Gara completata! Ottimo lavoro.`,true)
+          garaRef.current=null; setGara(null); setGaraActive(false)
+        }
+      }else{
+        speak("Stage completato. Ottimo lavoro.",true)
+      }
       return
     }
     const nextT=stage.targets[nextIdx], prevT=stage.targets[tgtIdxRef.current]
@@ -631,8 +749,17 @@ export default function App(){
     setTgtIdx(nextIdx); setShotsLeft(nextT.shots); setDist(nextT.dist)
     const s=physSolve(nextT.dist,ammoKeyRef.current,scopeHRef.current,zeroMRef.current,wxRef.current)
     const wt=s&&Math.abs(s.windMoa)>0.2?`, deriva ${ttsU(s.windMoa)}`:""
-    const pfx=nextT.pos!==prevT.pos?`Cambia — ${nextT.pos}. `:""
-    speak(`${pfx}Bersaglio ${nextT.id}, ${nextT.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
+    // Annuncio step-by-step: prima il cambio posizione (se c'è), poi i dati balistici
+    const posChange=nextT.pos!==prevT.pos
+    if(posChange){
+      // Pausa tra posizione e dati per separazione audio netta
+      speak(`Cambia posizione: ${nextT.pos}`,true)
+      setTimeout(()=>{
+        speak(`Bersaglio ${nextT.id}, ${nextT.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`)
+      },1200)
+    }else{
+      speak(`Bersaglio ${nextT.id}, ${nextT.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
+    }
   },[speak,ttsU])
 
   const onShotFired = useCallback(()=>{
@@ -642,20 +769,67 @@ export default function App(){
     else setTimeout(()=>advanceTarget(),600)
   },[speak,advanceTarget])
 
-  const onShotFiredRef = useRef(onShotFired)
+  const onShotFiredRef    = useRef(onShotFired)
+  const advanceTargetRef  = useRef(null)
+  const nextGaraStageRef  = useRef(null)
+  const loadStageRef      = useRef(null)
+  const startStageRef     = useRef(null)
   useEffect(()=>{onShotFiredRef.current=onShotFired},[onShotFired])
 
   const loadStage = useCallback((stage)=>{
     if(!stage?.targets.length)return
+    const curWx=wxRef.current
+    // Calcola DOPE per tutti i bersagli/posizioni
+    const sols=stage.targets.map(t=>({...t,...(physSolve(t.dist,ammoKey,scopeH,zeroM,curWx)||{})}))
     stageRef.current=stage; setCurrentStage(stage)
     setTgtIdx(0); setShotsLeft(stage.targets[0].shots)
     tgtIdxRef.current=0; shotsLeftRef.current=stage.targets[0].shots
-    setDist(stage.targets[0].dist); setStageActive(true)
+    setDist(stage.targets[0].dist)
+    setStageSols(sols)
+    // Stato pending: caricato ma timer non ancora partito
+    setStageActive(false); setStagePending(true); stagePendingRef.current=true
     setMainTab("home"); setActivePanel(null)
-    setStageSols(stage.targets.map(t=>({...t,...(physSolve(t.dist,ammoKey,scopeH,zeroM,wx,activeProfile??null)||{})})))
-    speak(`${stage.name}. ${stage.targets.length} bersagli, ${stage.par} secondi.`,true)
-    setTimeout(()=>speakTarget(stage,0,wx),1100)
-  },[speak,speakTarget,ammoKey,scopeH,zeroM,wx])
+
+    // Annuncio iniziale: nome + meteo usato
+    const wxSrc=bleConnected?`vento Calypso ${curWx.wind}m/s`:`vento stimato ${curWx.wind}m/s`
+    speak(`${stage.name}. ${stage.targets.length} posizioni, ${stage.par} secondi. ${wxSrc}.`,true)
+
+    // Leggi DOPE card completa in sequenza (400ms tra un target e l'altro)
+    let delay=1400
+    const uniqDists=[...new Map(sols.map(s=>[s.dist,s])).values()]
+    uniqDists.forEach((s)=>{
+      const wt=Math.abs(s.windMoa??0)>0.2?`, deriva ${ttsU(s.windMoa??0)}`:""
+      setTimeout(()=>speak(`Bersaglio ${s.berLabel||s.id}, ${s.dist} metri: alza ${ttsU(s.dropMoa??0)}${wt}.`),delay)
+      delay+=1600
+    })
+    // Fine briefing: attendi "go"
+    setTimeout(()=>speak('Stage pronto. Di "go" per iniziare.',true),delay)
+  },[speak,ttsU,ammoKey,scopeH,zeroM,bleConnected])
+
+  // Attivazione effettiva dello stage ("go")
+  const startGara = useCallback((garaObj)=>{
+    if(!garaObj?.stages?.length)return
+    const g={...garaObj,currentIdx:0}
+    garaRef.current=g; setGara(g); setGaraActive(true)
+    setMainTab("home"); setActivePanel(null)
+    speak(`Gara "${g.name}" avviata. ${g.stages.length} stage. Inizio ${g.stages[0].name}.`,true)
+    setTimeout(()=>loadStage(g.stages[0]),1400)
+  },[speak,loadStage])
+
+  const nextGaraStage = useCallback(()=>{
+    const g=garaRef.current; if(!g)return
+    const idx=g.currentIdx
+    if(idx>=g.stages.length){speak("Gara già completata.",true);return}
+    const stage=g.stages[idx]
+    speak(`Stage ${idx+1}: ${stage.name}`,true)
+    setTimeout(()=>loadStage(stage),900)
+  },[speak,loadStage])
+
+  // Mantieni le ref aggiornate per il fast-path vocale
+  useEffect(()=>{advanceTargetRef.current=advanceTarget},[advanceTarget])
+  useEffect(()=>{nextGaraStageRef.current=nextGaraStage},[nextGaraStage])
+  useEffect(()=>{loadStageRef.current=loadStage},[loadStage])
+  // nota: startStageRef.current viene aggiornato dopo la definizione di startStage (evita TDZ)
 
   // ── Timer ──
   const startTimer = useCallback((secs)=>{
@@ -689,6 +863,16 @@ export default function App(){
   },[timerSecs,speak,playBeep,playTriple])
 
   const stopTimer = useCallback(()=>{clearInterval(timerRef.current);setTimerRunning(false)},[])
+
+  // Attivazione effettiva dello stage ("go") — definita DOPO startTimer per evitare TDZ
+  const startStage = useCallback(()=>{
+    const stage=stageRef.current; if(!stage)return
+    setStagePending(false); stagePendingRef.current=false
+    setStageActive(true)
+    startTimer(stage.par)
+    setTimeout(()=>speakTarget(stage,0,wxRef.current),400)
+  },[speakTarget,startTimer])
+  useEffect(()=>{startStageRef.current=startStage},[startStage])
 
   // ── Mic / shot detection ──
   const startMic = useCallback(async()=>{
@@ -743,91 +927,6 @@ export default function App(){
     bleDevRef.current?.gatt?.disconnect(); setBleConnected(false); setBleName("")
   },[])
 
-  // ── BLE Kestrel 5700 Elite ──
-  const connectKestrel = useCallback(async()=>{
-    if(!navigator.bluetooth){setBleError("Web Bluetooth: usa Chrome/Edge Android");return}
-    setBleError("")
-    try{
-      const device=await navigator.bluetooth.requestDevice({
-        filters:[{namePrefix:"Kestrel"},{namePrefix:"KESTREL"}],
-        optionalServices:[KESTREL_SERVICE],
-      })
-      kestrelDevRef.current=device; setKestrelName(device.name||"Kestrel")
-      const server=await device.gatt.connect()
-      const service=await server.getPrimaryService(KESTREL_SERVICE)
-      const tx=await service.getCharacteristic(KESTREL_TX_CH)
-      await tx.startNotifications()
-      tx.addEventListener("characteristicvaluechanged",e=>{
-        // Kestrel invia stringhe NMEA-like: temp,pressione,umidità,velocità_vento,direzione
-        try{
-          const txt=new TextDecoder().decode(e.target.value).trim()
-          const parts=txt.split(",")
-          if(parts.length>=5){
-            const temp=parseFloat(parts[0])
-            const wind=parseFloat(parts[3])
-            const dir=parseFloat(parts[4])
-            if(!isNaN(temp))setWx(w=>({...w,temp:+temp.toFixed(1)}))
-            if(!isNaN(wind))setWx(w=>({...w,wind:+wind.toFixed(1)}))
-            if(!isNaN(dir))setWx(w=>({...w,windAngle:Math.round(dir)}))
-          }
-        }catch{}
-      })
-      setKestrelConnected(true)
-      device.addEventListener("gattserverdisconnected",()=>{
-        setKestrelConnected(false); setKestrelName(""); kestrelDevRef.current=null
-      })
-    }catch(e){if(e.name!=="NotFoundError")setBleError("Kestrel BLE: "+e.message)}
-  },[])
-
-  const disconnectKestrel = useCallback(()=>{
-    kestrelDevRef.current?.gatt?.disconnect()
-    setKestrelConnected(false); setKestrelName("")
-  },[])
-
-  // ── Truing BC — bisezione sul BC G7 ──
-  const computeTruing = useCallback(()=>{
-    const validRows=truingRows.filter(r=>r.dropMeas!==null&&r.dist>0)
-    if(validRows.length===0){setTruingMsg("Inserisci almeno una misura reale");return}
-
-    // Converti tutte le misure in mrad
-    const measures=validRows.map(r=>({
-      dist:r.dist,
-      mrad:r.unit==="MOA"?r.dropMeas/3.4377:r.dropMeas,
-    }))
-
-    // Funzione che calcola drop mrad con un dato BC G7
-    const calcDrop=(dist,bc,mv)=>{
-      const s=physSolve(dist,ammoKey,scopeH,zeroM,{...wx,mv:mv??wx.mv},
-        activeProfile?{...activeProfile,bcValue:bc,bcModel:"G7"}:{bcValue:bc,bcModel:"G7"})
-      return s?.dropMrad??0
-    }
-
-    // Bisezione sul BC per minimizzare errore su tutte le distanze
-    let lo=0.03,hi=0.35
-    for(let i=0;i<80;i++){
-      const mid=(lo+hi)/2
-      const err=measures.reduce((sum,m)=>sum+(calcDrop(m.dist,mid,null)-m.mrad),0)
-      if(err>0) lo=mid; else hi=mid
-    }
-    const bcTruato=+((lo+hi)/2).toFixed(4)
-
-    // Calcola errori per ogni distanza con BC truato
-    const errors=measures.map(m=>{
-      const calc=calcDrop(m.dist,bcTruato,null)
-      return{...m,calc:+calc.toFixed(3),delta:+(calc-m.mrad).toFixed(3)}
-    })
-
-    const msg=`BC G7 truato: ${bcTruato} | Errori: ${errors.map(e=>`${e.dist}m:${e.delta>0?"+":""}${e.delta}mrad`).join(", ")}`
-    setTruingMsg(msg)
-    setTruingMv(bcTruato) // Temporaneo per visualizzazione
-
-    // Offri di salvare nel profilo attivo
-    if(activeProfileId){
-      setProfiles(prev=>prev.map(p=>p.id===activeProfileId?{...p,bcValue:bcTruato,bcModel:"G7"}:p))
-      setTruingMsg(msg+" → SALVATO nel profilo attivo")
-    }
-  },[truingRows,ammoKey,scopeH,zeroM,wx,activeProfile,activeProfileId,setProfiles])
-
   // ── PDF import ──
   const handlePdfFile = useCallback(async(file)=>{
     if(!file)return; setPdfLoading(true); setBleError("")
@@ -843,21 +942,105 @@ export default function App(){
           text+=(await p.getTextContent()).items.map(x=>x.str).join(" ")+"\n"
         }
       }
-      const parsed=parseStageText(text)
-      if(!parsed.targets.length){setBleError("Nessuna distanza trovata");return}
-      const ns={...parsed,name:`PDF: ${file.name.replace(/\.[^.]+$/,"")}`}
-      setStages(prev=>[...prev,ns]); speak(`Stage importato: ${ns.targets.length} bersagli`)
+      const stagesFound=parseMultiStageText(text)
+      if(!stagesFound.length||!stagesFound[0].targets.length){setBleError("Nessuna distanza trovata");return}
+      const baseName=file.name.replace(/\.[^.]+$/,"")
+      const namedStages=stagesFound.map((s,i)=>({...s,name:stagesFound.length>1?s.name:`PDF: ${baseName}`}))
+      setStages(prev=>[...prev,...namedStages])
+      if(namedStages.length>1){
+        const garaObj={id:Date.now(),name:`Gara — ${baseName}`,stages:namedStages,currentIdx:0}
+        setGara(garaObj); garaRef.current=garaObj; setGaraActive(false)
+        speak(`Gara importata: ${namedStages.length} stage. Dì "Vega avvia gara" per iniziare.`)
+      }else{
+        speak(`Stage importato: ${namedStages[0].targets.length} bersagli`)
+      }
     }catch(e){setBleError("Errore: "+e.message)}
     finally{setPdfLoading(false)}
+  },[speak])
+
+  // ── Camera OCR import ──
+  const handleCameraPhoto = useCallback(async(file)=>{
+    if(!file)return
+    setCamLoading(true); setBleError("")
+    const previewUrl=URL.createObjectURL(file)
+    setCamPreview(previewUrl)
+    try{
+      const {createWorker}=await import("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js")
+      const worker=await createWorker("ita+eng",1,{
+        workerPath:"https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
+        corePath:"https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-lstm.wasm.js",
+        logger:()=>{},
+      })
+      const {data:{text}}=await worker.recognize(file)
+      await worker.terminate()
+      URL.revokeObjectURL(previewUrl)
+      const stagesFound=parseMultiStageText(text)
+      if(!stagesFound.length||!stagesFound[0].targets.length){setBleError("Nessuna distanza trovata nella foto");setCamPreview(null);return}
+      const fname=file.name?.replace(/\.[^.]+$/,"")||"Foto"
+      const namedStages=stagesFound.map((s,i)=>({...s,name:stagesFound.length>1?s.name:`Foto: ${fname}`}))
+      setStages(prev=>[...prev,...namedStages])
+      if(namedStages.length>1){
+        const garaObj={id:Date.now(),name:`Gara — ${fname}`,stages:namedStages,currentIdx:0}
+        setGara(garaObj); garaRef.current=garaObj; setGaraActive(false)
+        speak(`Gara da foto: ${namedStages.length} stage rilevati. Dì "Vega avvia gara" per iniziare.`)
+      }else{
+        speak(`Stage da foto: ${namedStages[0].targets.length} bersagli`)
+      }
+      setCamPreview(null)
+    }catch(e){setBleError("OCR: "+e.message);setCamPreview(null)}
+    finally{setCamLoading(false)}
   },[speak])
 
   // ── Voice ──
   const handleVoiceCommand = useCallback((txt)=>{
     const t=txt.toLowerCase().trim(); setVoiceTranscript(txt)
-    const sm=t.match(/stage\s+(\d+)|palco\s+(\d+)/)
-    if(sm){const n=+( sm[1]||sm[2]);const s=stages.find(s=>s.id===n);if(s){loadStage(s);return}speak("Stage non trovato",true);return}
-    if(/prossimo|avanza|via/.test(t)){advanceTarget();return}
+
+    const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
+
+    // ── Comandi GARA ──
+    if(/avvia\s*gara|inizia\s*gara|start\s*gara/.test(t)){
+      if(garaRef.current){startGara(garaRef.current)}
+      else speak("Nessuna gara caricata. Importa un PDF con gli stage.",true)
+      return
+    }
+    if(/stato\s*gara|gara\s*stato|gara\s*info/.test(t)){
+      const g=garaRef.current
+      if(!g){speak("Nessuna gara attiva",true);return}
+      speak(`Gara: stage ${g.currentIdx+1} di ${g.stages.length}. ${stageActive?"In corso.":"In attesa."}`,true)
+      return
+    }
+    if(/annulla\s*gara|esci\s*gara|fine\s*gara/.test(t)){
+      garaRef.current=null; setGara(null); setGaraActive(false)
+      speak("Gara annullata",true); return
+    }
+
+    // ── "next" / "prossimo" — solo avanza bersaglio/posizione dentro lo stage ──
+    if(/^(next|prossimo|avanza|via)$/.test(t.trim())){
+      if(stageActive){advanceTarget();return}
+      speak("Nessuno stage attivo",true); return
+    }
+
+    // ── "stage N" / "inizio stage N" / "carica stage N" ──
+    const sm=t.match(/(?:inizio|carica|avvia|vai\s+a)?\s*stage\s+(\d+|uno|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)/i)
+             ||t.match(/palco\s+(\d+)/i)
+    if(sm){
+      const raw=sm[1].toLowerCase(); const n=IT_NUM[raw]??+raw
+      const g=garaRef.current
+      // Prima cerca in gara per stageNum, poi per posizione nell'array, poi in tutta la library
+      const target=g?.stages.find(s=>s.stageNum===n)
+                  ||(g?.stages[n-1]??null)
+                  ||stages.find(s=>s.stageNum===n)
+      if(target){
+        if(g){const ng={...g,currentIdx:g.stages.indexOf(target)};garaRef.current=ng;setGara(ng)}
+        loadStage(target)
+      }else speak(`Stage ${n} non trovato`,true)
+      return
+    }
     if(/fuoco|colpo|sparo/.test(t)){onShotFiredRef.current?.();return}
+    if(/ripeti|risenti|ridillo/.test(t)){
+      if(currentStage&&stageActive)speakTarget(currentStage,tgtIdx,wx)
+      return
+    }
     if(/alzo|correzione|dati/.test(t)){
       const s=physSolve(distRef.current,ammoKeyRef.current,scopeHRef.current,zeroMRef.current,wxRef.current)
       if(s)speak(`A ${distRef.current} metri: alza ${ttsU(s.dropMoa)}, deriva ${ttsU(s.windMoa)}`,true)
@@ -872,12 +1055,20 @@ export default function App(){
     if(/avvia|start/.test(t)&&/timer/.test(t)){startTimer(0);speak("Timer avviato");return}
     if(/stop|ferma/.test(t)){stopTimer();speak("Timer fermo");return}
     speak("Comando non riconosciuto")
-  },[advanceTarget,loadStage,speak,ttsU,startTimer,stopTimer,stages])
+  },[advanceTarget,nextGaraStage,startGara,loadStage,speakTarget,speak,ttsU,startTimer,stopTimer,stages,stageActive,currentStage,tgtIdx,wx])
 
   useEffect(()=>{
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition
     if(!SR){setVoiceFeed("Voce: usa Chrome/Edge");return}
     const rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="it-IT"; recRef.current=rec
+    // Parole chiave dirette (no wake word) attive durante stage o gara
+    const DIRECT_NEXT  = /^\s*(next|avanti)\s*$/i
+    const DIRECT_GO    = /^\s*(go|vai|inizia|start|pronti|fuoco)\s*$/i
+    const DIRECT_SHOT  = /^\s*(colpo|sparo)\s*$/i
+    // "stage uno/1" ... "stage dieci/10" — numeri in lettere italiane
+    const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
+    const DIRECT_STAGE = /\bstage\s+(\d+|uno|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)\b/i
+
     rec.onresult=e=>{
       let interim="",final=""
       for(let i=e.resultIndex;i<e.results.length;i++){
@@ -888,6 +1079,38 @@ export default function App(){
       if(final){
         setVoiceTranscript("")
         const tl=final.toLowerCase().trim()
+
+        // ── FAST PATH ──
+        // "go/vai/inizia" → attiva stage e parte il timer (quando stage è pending)
+        if(stagePendingRef.current && DIRECT_GO.test(tl)){
+          setVoiceFeed("▶ GO"); startStageRef.current?.(); return
+        }
+        // "next/avanti" → colpo sparato (decrementa shots, avanza posizione quando finiti)
+        if(stageActiveRef.current && DIRECT_NEXT.test(tl)){
+          setVoiceFeed("▶ NEXT"); onShotFiredRef.current?.(); return
+        }
+        // "colpo/sparo" → sinonimo diretto colpo
+        if(stageActiveRef.current && DIRECT_SHOT.test(tl)){
+          setVoiceFeed("◉ COLPO"); onShotFiredRef.current?.(); return
+        }
+        // "stage N" → carica stage N dalla gara (durante gara, con o senza stage attivo)
+        if(garaRef.current){
+          const sm=tl.match(DIRECT_STAGE)
+          if(sm){
+            const raw=sm[1]; const n=IT_NUM[raw]??+raw
+            const g=garaRef.current
+            const target=g.stages.find(s=>s.stageNum===n)||(g.stages[n-1]??null)
+            if(target){
+              setVoiceFeed(`STAGE ${n}`)
+              const ng={...g,currentIdx:g.stages.indexOf(target)}
+              garaRef.current=ng; setGara(ng)
+              loadStageRef.current?.(target)
+            }else speak(`Stage ${n} non trovato`,true)
+            return
+          }
+        }
+
+        // ── NORMAL FLOW: wake word "Vega" ──
         if(wakePendRef.current){
           setWakePending(false);wakePendRef.current=false
           clearTimeout(wakeTimeoutRef.current);setVoiceState("idle")
@@ -913,14 +1136,46 @@ export default function App(){
     clearInterval(timerRef.current)
     recRef.current?.stop()
     bleDevRef.current?.gatt?.disconnect()
-    kestrelDevRef.current?.gatt?.disconnect()
     wakeLockRef.current?.release()
   },[])
 
   // ── Derived ──
   const ammoData   = FLAT[ammoKey]
-  const timerColor = timerLeft!==null?(timerLeft<=10?RED:timerLeft<=30?AMB:GRN):GRN
   const vdotColor  = voiceState==="waiting"?AMB:voiceState==="speaking"?CYN:"rgba(0,255,65,.4)"
+
+  // ══════════════════════════════════════════════════════════════
+  // THEME
+  // ══════════════════════════════════════════════════════════════
+  const dk = theme === "dark"
+  _GRN = dk ? GRN : "#1C1C1E"
+  const T = {
+    bg:          dk ? "#020c04"              : "#F0F2F5",
+    card:        dk ? "rgba(0,255,65,.025)"  : "#FFFFFF",
+    cardBorder:  dk ? "rgba(0,255,65,.1)"    : "rgba(0,0,0,.08)",
+    text:        dk ? "#e8ffe8"              : "#1C1C1E",
+    textDim:     dk ? "rgba(0,255,65,.45)"   : "#8E8E93",
+    lbl:         dk ? "rgba(0,255,65,.45)"   : "#007AFF",
+    inputBg:     dk ? "rgba(0,255,65,.04)"   : "#F2F2F7",
+    inputBorder: dk ? "rgba(0,255,65,.18)"   : "rgba(0,0,0,.12)",
+    inputText:   dk ? "#00ff41"              : "#1C1C1E",
+    navBg:       dk ? "#020c04"              : "#FFFFFF",
+    navBorder:   dk ? "rgba(0,255,65,.12)"   : "rgba(0,0,0,.1)",
+    hdrBorder:   dk ? "rgba(0,255,65,.1)"    : "rgba(0,0,0,.1)",
+    hdrBg:       dk ? "transparent"          : "#FFFFFF",
+    pillBorder:  dk ? "rgba(0,255,65,.2)"    : "rgba(0,0,0,.15)",
+    pillText:    dk ? "rgba(0,255,65,.55)"   : "#555",
+    pillOnBg:    dk ? "rgba(0,255,65,.12)"   : "#007AFF",
+    pillOnText:  dk ? "#00ff41"              : "#FFF",
+    pillOnBorder:dk ? "rgba(0,255,65,.5)"    : "#007AFF",
+    grn:         dk ? GRN                    : "#1C1C1E",
+    accent:      dk ? GRN                    : "#007AFF",
+    accentDim:   dk ? "rgba(0,255,65,.3)"    : "rgba(0,122,255,.3)",
+    statusBg:    dk ? "rgba(2,12,4,.98)"     : "#FFFFFF",
+    voiceBarBg:  dk ? "rgba(0,10,2,.8)"      : "rgba(240,245,255,.95)",
+    scan:        dk,
+  }
+
+  const timerColor = timerLeft!==null?(timerLeft<=10?RED:timerLeft<=30?AMB:T.grn):T.grn
 
   // ══════════════════════════════════════════════════════════════
   // RENDER
@@ -930,45 +1185,45 @@ export default function App(){
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=IBM+Plex+Mono:wght@300;400;500&display=swap');
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-    html,body{background:#020c04;height:100%;overflow:hidden;-webkit-text-size-adjust:100%}
-    .vg-root{height:100vh;height:100dvh;background:#020c04;color:#00ff41;font-family:'IBM Plex Mono',monospace;display:flex;flex-direction:column;overflow:hidden}
+    html,body{background:${T.bg};height:100%;overflow:hidden;-webkit-text-size-adjust:100%}
+    .vg-root{height:100vh;height:100dvh;background:${T.bg};color:${T.text};font-family:'IBM Plex Mono',monospace;display:flex;flex-direction:column;overflow:hidden}
     .orb{font-family:'Orbitron',monospace}
-    .lbl{font-size:7px;letter-spacing:.15em;color:rgba(0,255,65,.45);text-transform:uppercase;margin-bottom:2px}
-    .card{background:rgba(0,255,65,.025);border:1px solid rgba(0,255,65,.1);padding:10px 12px;margin-bottom:6px}
-    .vg-in{background:rgba(0,255,65,.04);border:1px solid rgba(0,255,65,.18);color:#00ff41;font-family:'IBM Plex Mono',monospace;font-size:14px;padding:8px 10px;outline:none;width:100%;border-radius:2px}
-    .vg-in:focus{border-color:rgba(0,255,65,.55)}
-    .vg-in::placeholder{color:rgba(0,255,65,.2)}
-    .vg-sel{background:rgba(0,255,65,.04);border:1px solid rgba(0,255,65,.18);color:#00ff41;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:8px 9px;outline:none;cursor:pointer;width:100%;border-radius:2px}
-    .vg-sel option{background:#020c04}
-    .vg-range{-webkit-appearance:none;appearance:none;width:100%;height:4px;background:rgba(0,255,65,.15);outline:none;cursor:pointer;border-radius:2px}
-    .vg-range::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:#00ff41;cursor:pointer}
-    .vg-range::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#00ff41;cursor:pointer;border:none}
-    .btn-prim{background:#00ff41;color:#020c04;border:none;font-family:'Orbitron',monospace;font-size:10px;font-weight:700;letter-spacing:.12em;padding:12px 18px;cursor:pointer;text-transform:uppercase;border-radius:2px;min-height:44px}
+    .lbl{font-size:7px;letter-spacing:.15em;color:${T.lbl};text-transform:uppercase;margin-bottom:2px}
+    .card{background:${T.card};border:1px solid ${T.cardBorder};padding:10px 12px;margin-bottom:6px;${dk?"":"box-shadow:0 1px 4px rgba(0,0,0,.06);"}}
+    .vg-in{background:${T.inputBg};border:1px solid ${T.inputBorder};color:${T.inputText};font-family:'IBM Plex Mono',monospace;font-size:14px;padding:8px 10px;outline:none;width:100%;border-radius:${dk?"2px":"8px"}}
+    .vg-in:focus{border-color:${T.accent}}
+    .vg-in::placeholder{color:${T.textDim}}
+    .vg-sel{background:${T.inputBg};border:1px solid ${T.inputBorder};color:${T.inputText};font-family:'IBM Plex Mono',monospace;font-size:12px;padding:8px 9px;outline:none;cursor:pointer;width:100%;border-radius:${dk?"2px":"8px"}}
+    .vg-sel option{background:${T.bg}}
+    .vg-range{-webkit-appearance:none;appearance:none;width:100%;height:4px;background:${T.accentDim};outline:none;cursor:pointer;border-radius:2px}
+    .vg-range::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:${T.accent};cursor:pointer}
+    .vg-range::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:${T.accent};cursor:pointer;border:none}
+    .btn-prim{background:${dk?GRN:"#007AFF"};color:${dk?"#020c04":"#FFF"};border:none;font-family:'Orbitron',monospace;font-size:10px;font-weight:700;letter-spacing:.12em;padding:12px 18px;cursor:pointer;text-transform:uppercase;border-radius:${dk?"2px":"10px"};min-height:44px}
     .btn-prim:active{opacity:.8}
     .btn-prim.amb{background:${AMB}}
     .btn-prim.red{background:${RED};color:#fff}
     .btn-prim.prp{background:${PRP};color:#fff}
-    .btn-out{background:transparent;color:#00ff41;border:1px solid rgba(0,255,65,.3);font-family:'IBM Plex Mono',monospace;font-size:11px;padding:10px 12px;cursor:pointer;border-radius:2px;min-height:44px}
-    .btn-out:active{background:rgba(0,255,65,.08)}
+    .btn-out{background:transparent;color:${dk?GRN:"#007AFF"};border:1px solid ${dk?"rgba(0,255,65,.3)":"rgba(0,122,255,.3)"};font-family:'IBM Plex Mono',monospace;font-size:11px;padding:10px 12px;cursor:pointer;border-radius:${dk?"2px":"10px"};min-height:44px}
+    .btn-out:active{background:${dk?"rgba(0,255,65,.08)":"rgba(0,122,255,.06)"}}
     .btn-out.red{color:${RED};border-color:rgba(255,51,68,.35)}
-    .pill{background:transparent;border:1px solid rgba(0,255,65,.2);color:rgba(0,255,65,.55);font-family:'IBM Plex Mono',monospace;font-size:10px;padding:5px 10px;cursor:pointer;min-height:36px;border-radius:2px}
-    .pill.on{background:rgba(0,255,65,.12);border-color:rgba(0,255,65,.5);color:#00ff41}
+    .pill{background:transparent;border:1px solid ${T.pillBorder};color:${T.pillText};font-family:'IBM Plex Mono',monospace;font-size:10px;padding:5px 10px;cursor:pointer;min-height:36px;border-radius:${dk?"2px":"20px"}}
+    .pill.on{background:${T.pillOnBg};border-color:${T.pillOnBorder};color:${T.pillOnText}}
     .toggle-wrap{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;min-height:44px}
-    .toggle-bg{width:44px;height:24px;border-radius:12px;background:rgba(0,255,65,.08);border:1px solid rgba(0,255,65,.2);position:relative;transition:all .2s;flex-shrink:0}
-    .toggle-bg.on{background:rgba(0,255,65,.22);border-color:rgba(0,255,65,.5)}
-    .toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#00ff41;transition:transform .2s}
+    .toggle-bg{width:44px;height:24px;border-radius:12px;background:${dk?"rgba(0,255,65,.08)":"rgba(120,120,128,.2)"};border:1px solid ${dk?"rgba(0,255,65,.2)":"transparent"};position:relative;transition:all .2s;flex-shrink:0}
+    .toggle-bg.on{background:${dk?"rgba(0,255,65,.22)":"#34C759"};border-color:${dk?"rgba(0,255,65,.5)":"transparent"}}
+    .toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:${dk?GRN:"#FFF"};transition:transform .2s;box-shadow:${dk?"none":"0 1px 3px rgba(0,0,0,.3)"}}
     .toggle-bg.on .toggle-knob{transform:translateX(20px)}
-    .unit-btn{background:transparent;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:.1em;padding:5px 12px;cursor:pointer;border:1px solid rgba(0,255,65,.2);color:rgba(0,255,65,.45);min-height:36px;border-radius:2px}
-    .unit-btn.on{background:${GRN};color:#020c04;border-color:${GRN};font-weight:700}
-    .scroll-panel{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px;padding-bottom:70px}
-    .bottom-nav{display:flex;border-top:1px solid rgba(0,255,65,.12);flex-shrink:0;background:#020c04}
-    .bnav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px;cursor:pointer;color:rgba(0,255,65,.35);font-family:'Orbitron',monospace;font-size:7px;letter-spacing:.1em;gap:3px;min-height:54px;border:none;background:transparent}
-    .bnav-btn.on{color:${GRN}}
+    .unit-btn{background:transparent;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:.1em;padding:5px 12px;cursor:pointer;border:1px solid ${dk?"rgba(0,255,65,.2)":"rgba(0,0,0,.15)"};color:${dk?"rgba(0,255,65,.45)":"#8E8E93"};min-height:36px;border-radius:${dk?"2px":"8px"}}
+    .unit-btn.on{background:${dk?GRN:"#007AFF"};color:${dk?"#020c04":"#FFF"};border-color:${dk?GRN:"#007AFF"};font-weight:700}
+    .scroll-panel{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px;padding-bottom:70px;background:${T.bg}}
+    .bottom-nav{display:flex;border-top:1px solid ${T.navBorder};flex-shrink:0;background:${T.navBg}}
+    .bnav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px;cursor:pointer;color:${dk?"rgba(0,255,65,.35)":"#8E8E93"};font-family:'Orbitron',monospace;font-size:7px;letter-spacing:.1em;gap:3px;min-height:54px;border:none;background:transparent}
+    .bnav-btn.on{color:${dk?GRN:"#007AFF"}}
     .bnav-btn .bn-icon{font-size:18px;line-height:1}
     .scan{position:fixed;inset:0;pointer-events:none;z-index:1;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,255,65,.012) 2px,rgba(0,255,65,.012) 4px)}
     @keyframes cwSpin{to{transform:rotate(360deg)}}
     @keyframes ccwSpin{to{transform:rotate(-360deg)}}
-    @keyframes glowT{0%,100%{text-shadow:0 0 8px rgba(0,255,65,.55)}50%{text-shadow:0 0 20px rgba(0,255,65,1)}}
+    @keyframes glowT{0%,100%{text-shadow:0 0 8px ${dk?"rgba(0,255,65,.55)":"rgba(0,122,255,.4)"}}50%{text-shadow:0 0 20px ${dk?"rgba(0,255,65,1)":"rgba(0,122,255,.8)"}}}
     @keyframes timerWarn{0%,100%{opacity:1}50%{opacity:.1}}
     @keyframes bleBlip{0%,100%{opacity:1}50%{opacity:.2}}
     @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -978,7 +1233,7 @@ export default function App(){
     .ring-a{position:absolute;inset:0;border-radius:50%;border:1px solid rgba(0,255,65,.48);border-top-color:transparent;border-left-color:transparent;animation:cwSpin 5s linear infinite}
     .ring-b{position:absolute;inset:8px;border-radius:50%;border:1px dashed rgba(0,255,65,.2);animation:ccwSpin 9s linear infinite}
     .ring-c{position:absolute;inset:15px;border-radius:50%;border:1px solid rgba(0,255,65,.3);border-bottom-color:transparent;animation:cwSpin 3s linear infinite}
-    ::-webkit-scrollbar{width:2px}::-webkit-scrollbar-thumb{background:rgba(0,255,65,.18)}
+    ::-webkit-scrollbar{width:2px}::-webkit-scrollbar-thumb{background:${T.accentDim}}
     @media(min-width:600px){.widget-grid{grid-template-columns:1fr 1fr 1fr 1fr!important}}
   `}</style>
 
@@ -988,16 +1243,16 @@ export default function App(){
       display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
       opacity:splashFade?0:1,transition:"opacity .7s",pointerEvents:splashFade?"none":"all"}}>
       <img src={vegaImg} alt="VEGA" style={{width:220,maxWidth:"70vw",filter:"drop-shadow(0 0 24px #00ff41)"}}/>
-      <div className="orb glow-t" style={{fontSize:24,letterSpacing:".5em",fontWeight:900,color:GRN,marginTop:20}}>V.E.G.A</div>
+      <div className="orb glow-t" style={{fontSize:24,letterSpacing:".5em",fontWeight:900,color:T.grn,marginTop:20}}>V.E.G.A</div>
       <div style={{fontSize:9,color:"rgba(0,255,65,.4)",letterSpacing:".15em",marginTop:8}}>Shooting Labs · v4</div>
     </div>
   )}
 
   <div className="vg-root">
-    <div className="scan"/>
+    {T.scan&&<div className="scan"/>}
 
     {/* ═══ HEADER ═══ */}
-    <div style={{padding:"6px 12px",borderBottom:"1px solid rgba(0,255,65,.1)",
+    <div style={{padding:"6px 12px",borderBottom:`1px solid ${T.hdrBorder}`,background:T.hdrBg,
       display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,gap:8,minHeight:48}}>
 
       {activePanel?(
@@ -1005,17 +1260,18 @@ export default function App(){
           onClick={()=>setActivePanel(null)}>‹ {mainTab==="profiles"?"PROFILI":"HOME"}</button>
       ):(
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div className="orb glow-t" style={{fontSize:14,letterSpacing:".3em",fontWeight:900,color:GRN}}>V·E·G·A</div>
+          <div className="orb glow-t" style={{fontSize:14,letterSpacing:".3em",fontWeight:900,color:T.grn}}>V·E·G·A</div>
           {stageActive&&(
-            <span style={{fontSize:7,color:AMB,fontFamily:"Orbitron,monospace",animation:"bleBlip 1.2s infinite"}}>
-              ● STAGE
-            </span>
+            <span style={{fontSize:7,color:AMB,fontFamily:"Orbitron,monospace",animation:"bleBlip 1.2s infinite"}}>● STAGE</span>
+          )}
+          {stagePending&&!stageActive&&(
+            <span style={{fontSize:7,color:CYN,fontFamily:"Orbitron,monospace",animation:"bleBlip 1s infinite"}}>◌ PRONTO</span>
           )}
         </div>
       )}
 
       {activePanel&&(
-        <div className="orb" style={{fontSize:10,color:GRN,letterSpacing:".15em",flex:1,textAlign:"center"}}>
+        <div className="orb" style={{fontSize:10,color:T.grn,letterSpacing:".15em",flex:1,textAlign:"center"}}>
           {activePanel.replace("_"," ").toUpperCase()}
         </div>
       )}
@@ -1028,14 +1284,42 @@ export default function App(){
     </div>
 
     {/* Voice bar */}
-    {(voiceTranscript||voiceState!=="idle")&&(
-      <div style={{fontSize:8,color:"rgba(0,255,65,.5)",textAlign:"center",padding:"2px 12px",
-        borderBottom:"1px solid rgba(0,255,65,.06)",background:"rgba(0,10,2,.8)"}}>
-        {voiceTranscript?<span style={{color:CYN}}>{voiceTranscript}</span>:voiceFeed}
+    {(voiceTranscript||voiceState!=="idle"||(stageActive||stagePending||gara))&&(
+      <div style={{fontSize:8,textAlign:"center",padding:"3px 12px",
+        borderBottom:`1px solid ${stageActive?"rgba(255,170,0,.15)":stagePending?"rgba(0,212,255,.15)":T.hdrBorder}`,
+        background:stageActive?(dk?"rgba(10,6,0,.9)":"rgba(255,170,0,.06)"):stagePending?(dk?"rgba(0,8,12,.95)":"rgba(0,212,255,.06)"):T.voiceBarBg,
+        color:stageActive?AMB:stagePending?CYN:T.textDim}}>
+        {voiceTranscript
+          ?<span style={{color:CYN}}>{voiceTranscript}</span>
+          :stageActive
+            ?<span>Di <b style={{color:AMB}}>"next"</b> per colpo / avanzare</span>
+            :stagePending
+              ?<span style={{animation:"bleBlip 1s infinite"}}>Di <b style={{color:CYN}}>"go"</b> per avviare timer e iniziare</span>
+              :gara&&!stageActive
+                ?<span>Di <b style={{color:PRP}}>"stage {gara.currentIdx+1}"</b> per iniziare</span>
+                :voiceFeed}
       </div>
     )}
 
-    {/* ═══ STAGE BAR — sempre visibile in home ═══ */}
+    {/* ═══ STAGE BAR — pending (briefing, attesa GO) ═══ */}
+    {stagePending&&currentStage&&!activePanel&&mainTab==="home"&&(
+      <div style={{padding:"6px 12px",background:"rgba(0,8,16,.97)",borderBottom:`1px solid ${CYN}44`,
+        display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+        <div style={{flex:1,minWidth:0}}>
+          <StageProgress targets={currentStage.targets} currentIdx={-1}/>
+          <div style={{fontSize:8,color:CYN,marginTop:2,fontFamily:"Orbitron,monospace",letterSpacing:".1em"}}>
+            {currentStage.name} · {currentStage.par}s
+          </div>
+        </div>
+        <button className="btn-prim" style={{fontSize:12,padding:"10px 20px",background:CYN,color:"#001820",
+          fontWeight:900,letterSpacing:".15em",animation:"bleBlip .8s infinite"}}
+          onClick={startStage}>GO</button>
+        <button className="btn-out red" style={{fontSize:10,padding:"8px 10px"}}
+          onClick={()=>{setStagePending(false);stagePendingRef.current=false;stageRef.current=null;setCurrentStage(null);speak("Annullato")}}>■</button>
+      </div>
+    )}
+
+    {/* ═══ STAGE BAR — attivo (timer in corso) ═══ */}
     {stageActive&&curTarget&&!activePanel&&mainTab==="home"&&(
       <div style={{padding:"6px 12px",background:"rgba(0,16,4,.95)",borderBottom:`1px solid ${AMB}44`,
         display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
@@ -1045,13 +1329,13 @@ export default function App(){
         </div>
         <div style={{textAlign:"center",flexShrink:0}}>
           <div className="orb" style={{fontSize:22,color:AMB,lineHeight:1}}>T{curTarget.id}</div>
-          <div className="orb" style={{fontSize:16,color:GRN}}>{curTarget.dist}m</div>
-          {curSol&&<div className="orb" style={{fontSize:14,color:GRN}}>{signU(curSol.dropMoa)}<span style={{fontSize:7}}> {unitLbl}</span></div>}
+          <div className="orb" style={{fontSize:16,color:T.grn}}>{curTarget.dist}m</div>
+          {curSol&&<div className="orb" style={{fontSize:14,color:T.grn}}>{signU(curSol.dropMoa)}<span style={{fontSize:7}}> {unitLbl}</span></div>}
         </div>
         <div style={{display:"flex",gap:5,flexShrink:0}}>
-          <button className="btn-prim amb" style={{fontSize:10,padding:"8px 12px"}} onClick={advanceTarget}>▶</button>
+          <button className="btn-prim amb" style={{fontSize:10,padding:"8px 12px"}} onClick={onShotFired}>▶</button>
           <button className="btn-out red" style={{fontSize:10,padding:"8px 10px"}}
-            onClick={()=>{setStageActive(false);stageRef.current=null;speak("Interrotto")}}>■</button>
+            onClick={()=>{setStageActive(false);setStagePending(false);stageRef.current=null;stopTimer();speak("Interrotto")}}>■</button>
         </div>
       </div>
     )}
@@ -1065,19 +1349,19 @@ export default function App(){
           <div className="widget-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
 
             {/* WIDGET SOLUZIONE */}
-            <Widget label="SOLUZIONE" color={GRN} onClick={()=>setActivePanel("solver")} active={!!sol} badge={unit}>
+            <Widget label="SOLUZIONE" color={T.grn} onClick={()=>setActivePanel("solver")} active={!!sol} badge={unit}>
               {sol?(
                 <div className={pulse?"pulse-sol":""} style={{textAlign:"center",width:"100%",paddingTop:6}}>
-                  <div className="orb" style={{fontSize:30,lineHeight:1,color:sol.dropMoa>=0?GRN:AMB}}>{signU(sol.dropMoa)}</div>
+                  <div className="orb" style={{fontSize:30,lineHeight:1,color:sol.dropMoa>=0?T.grn:AMB}}>{signU(sol.dropMoa)}</div>
                   <div style={{fontSize:7,color:"rgba(0,255,65,.4)",marginBottom:6}}>{unitLbl} ALZO</div>
-                  <div className="orb" style={{fontSize:18,color:Math.abs(sol.windMoa)>0.5?CYN:"rgba(0,255,65,.4)"}}>{signU(sol.windMoa)}</div>
+                  <div className="orb" style={{fontSize:18,color:Math.abs(sol.windMoa)>0.5?CYN:(dk?"rgba(0,255,65,.4)":CYN)}}>{signU(sol.windMoa)}</div>
                   <div style={{fontSize:7,color:"rgba(0,212,255,.4)",marginBottom:4}}>{unitLbl} VENTO</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:2,marginTop:4}}>
                     {[[dist+"m","dist"],[sol.tofMs+"ms","TOF"],
                       [(wx.mv??ammoData?.mv)+"m/s","MV"],
                       [U.en(sol.eneJ,units)+" "+U.enL(units),"energia"]].map(([v,l])=>(
                       <div key={l} style={{textAlign:"center"}}>
-                        <div className="orb" style={{fontSize:10,color:l==="MV"&&wx.mv?CYN:GRN}}>{v}</div>
+                        <div className="orb" style={{fontSize:10,color:l==="MV"&&wx.mv?CYN:T.grn}}>{v}</div>
                         <div style={{fontSize:5,color:l==="MV"&&wx.mv?"rgba(0,212,255,.4)":"rgba(0,255,65,.3)"}}>{l}{l==="MV"&&wx.mv?" ✓":""}</div>
                       </div>
                     ))}
@@ -1090,15 +1374,16 @@ export default function App(){
             </Widget>
 
             {/* WIDGET BERSAGLIO */}
-            <Widget label="BERSAGLIO" color={AMB} onClick={()=>setActivePanel("stage")} active={stageActive}
-              badge={stageActive?`${tgtIdx+1}/${currentStage?.targets.length}`:null}>
+            <Widget label="BERSAGLIO" color={stageActive?AMB:stagePending?CYN:gara?PRP:AMB}
+              onClick={()=>setActivePanel("stage")} active={stageActive||stagePending||!!gara}
+              badge={stageActive?`${tgtIdx+1}/${currentStage?.targets.length}`:stagePending?"RDY":gara?`G${gara.currentIdx+1}/${gara.stages.length}`:null}>
               {stageActive&&curTarget?(
                 <div style={{textAlign:"center",width:"100%",paddingTop:6}}>
                   <div className="orb" style={{fontSize:26,color:AMB,lineHeight:1}}>T{curTarget.id}</div>
-                  <div className="orb" style={{fontSize:20,color:GRN,lineHeight:1.1}}>{curTarget.dist}m</div>
+                  <div className="orb" style={{fontSize:20,color:T.grn,lineHeight:1.1}}>{curTarget.dist}m</div>
                   {curSol&&(
                     <>
-                      <div className="orb" style={{fontSize:18,color:GRN,marginTop:4}}>{signU(curSol.dropMoa)}</div>
+                      <div className="orb" style={{fontSize:18,color:T.grn,marginTop:4}}>{signU(curSol.dropMoa)}</div>
                       <div style={{fontSize:6,color:"rgba(0,255,65,.4)"}}>{unitLbl}</div>
                       {Math.abs(curSol.windMoa)>0.2&&<div style={{fontSize:9,color:CYN}}>{signU(curSol.windMoa)} ⇾</div>}
                     </>
@@ -1106,10 +1391,40 @@ export default function App(){
                   <div style={{fontSize:8,color:"rgba(255,170,0,.6)",marginTop:4}}>{curTarget.pos}</div>
                   <ShotDots total={curTarget.shots} remaining={shotsLeft}/>
                 </div>
+              ):stagePending&&currentStage?(
+                <div style={{textAlign:"center",paddingTop:4,width:"100%"}}>
+                  <div className="orb" style={{fontSize:9,color:CYN,lineHeight:1.2,animation:"bleBlip .8s infinite"}}>BRIEFING</div>
+                  <div style={{fontSize:7,color:"rgba(0,212,255,.6)",marginTop:2}}>{currentStage.name?.slice(0,22)}</div>
+                  <div style={{marginTop:6,display:"flex",flexDirection:"column",gap:2,width:"100%"}}>
+                    {[...new Map(stageSols.map(s=>[s.dist,s])).values()].slice(0,4).map(s=>(
+                      <div key={s.dist} style={{display:"flex",justifyContent:"space-between",
+                        padding:"2px 4px",background:"rgba(0,212,255,.05)",fontSize:8}}>
+                        <span style={{color:CYN,fontFamily:"Orbitron,monospace"}}>{s.berLabel||"·"} {s.dist}m</span>
+                        <span style={{color:T.grn,fontFamily:"Orbitron,monospace"}}>{signU(s.dropMoa??0,1)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:6,color:CYN,marginTop:4}}>"go" per iniziare</div>
+                </div>
               ):(
-                <div style={{textAlign:"center",paddingTop:10}}>
-                  <div style={{fontSize:22,color:"rgba(0,255,65,.1)"}}>⊙</div>
-                  <div style={{fontSize:9,color:"rgba(0,255,65,.25)",marginTop:6}}>TAP PER<br/>STAGE</div>
+                <div style={{textAlign:"center",paddingTop:6}}>
+                  {gara?(
+                    <>
+                      <div className="orb" style={{fontSize:11,color:PRP,lineHeight:1.2}}>GARA</div>
+                      <div className="orb" style={{fontSize:18,color:PRP,lineHeight:1.1}}>{gara.currentIdx+1}/{gara.stages.length}</div>
+                      <div style={{fontSize:7,color:"rgba(204,68,255,.5)",marginTop:3,lineHeight:1.4,maxWidth:80,margin:"3px auto 0"}}>
+                        {gara.stages[gara.currentIdx]?.name?.slice(0,20)}
+                      </div>
+                      {!stageActive&&<div style={{fontSize:6,color:"rgba(204,68,255,.4)",marginTop:4}}>
+                        "Vega next"
+                      </div>}
+                    </>
+                  ):(
+                    <>
+                      <div style={{fontSize:22,color:"rgba(0,255,65,.1)"}}>⊙</div>
+                      <div style={{fontSize:9,color:"rgba(0,255,65,.25)",marginTop:6}}>TAP PER<br/>STAGE</div>
+                    </>
+                  )}
                 </div>
               )}
             </Widget>
@@ -1149,11 +1464,11 @@ export default function App(){
               <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(rangeCard.length,ammoGroup==="RIMFIRE"?10:7)},1fr)`,gap:3}}>
                 {rangeCard.map(r=>(
                   <div key={r.dist} onClick={()=>setDist(r.dist)} style={{
-                    background:r.dist===dist?"rgba(0,255,65,.1)":"rgba(0,255,65,.02)",
-                    border:`1px solid ${r.dist===dist?"rgba(0,255,65,.35)":"rgba(0,255,65,.06)"}`,
+                    background:r.dist===dist?(dk?"rgba(0,255,65,.1)":"rgba(255,200,50,.35)"):(dk?"rgba(0,255,65,.02)":"rgba(255,210,80,.1)"),
+                    border:`1px solid ${r.dist===dist?(dk?"rgba(0,255,65,.35)":"rgba(180,140,0,.5)"):(dk?"rgba(0,255,65,.06)":"rgba(180,140,0,.18)")}`,
                     padding:"3px 1px",textAlign:"center",cursor:"pointer",borderRadius:2}}>
-                    <div style={{fontSize:6,color:"rgba(0,255,65,.3)"}}>{r.dist}</div>
-                    <div className="orb" style={{fontSize:9,color:r.supersonic===false?AMB:GRN}}>{signU(r.dropMoa??0,1)}</div>
+                    <div style={{fontSize:6,color:dk?"rgba(0,255,65,.3)":"#1C1C1E"}}>{r.dist}</div>
+                    <div className="orb" style={{fontSize:9,color:r.supersonic===false?AMB:(dk?T.grn:"#1C1C1E")}}>{signU(r.dropMoa??0,1)}</div>
                   </div>
                 ))}
               </div>
@@ -1164,15 +1479,15 @@ export default function App(){
           <div className="card">
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
               <div style={{minWidth:0,flex:1}}>
-                <div style={{fontSize:9,color:GRN,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                <div style={{fontSize:9,color:T.grn,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   {activeProfile?.name??ammoKey}
                 </div>
-                <div style={{fontSize:6,color:"rgba(0,255,65,.35)",marginTop:1}}>
-                  BC:{ammoData?.bc_g7} · MV:<span style={{color:wx.mv?CYN:GRN}}>{wx.mv??ammoData?.mv}m/s{wx.mv?' ✓':''}</span> · ◎{zeroM}m
+                <div style={{fontSize:6,color:dk?"rgba(0,255,65,.35)":T.textDim,marginTop:1}}>
+                  BC:{ammoData?.bc_g7} · MV:<span style={{color:wx.mv?CYN:T.grn}}>{wx.mv??ammoData?.mv}m/s{wx.mv?' ✓':''}</span> · ◎{zeroM}m
                 </div>
               </div>
             </div>
-            <div className="lbl">DISTANZA — <span className="orb" style={{fontSize:13,color:GRN}}>{dist}m</span></div>
+            <div className="lbl">DISTANZA — <span className="orb" style={{fontSize:13,color:T.grn}}>{dist}m</span></div>
             <input type="range" className="vg-range" min={10} max={zeroM<=50?500:2000} value={dist}
               onChange={e=>setDist(+e.target.value)}/>
           </div>
@@ -1206,7 +1521,7 @@ export default function App(){
               <div className={pulse?"pulse-sol":""} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
                 <div className="card" style={{borderColor:"rgba(0,255,65,.3)"}}>
                   <div className="lbl">ALZO</div>
-                  <div className="orb" style={{fontSize:34,color:sol.dropMoa>=0?GRN:AMB,lineHeight:1}}>{signU(sol.dropMoa)}</div>
+                  <div className="orb" style={{fontSize:34,color:sol.dropMoa>=0?T.grn:AMB,lineHeight:1}}>{signU(sol.dropMoa)}</div>
                   <div style={{fontSize:9,color:"rgba(0,255,65,.35)",marginTop:2}}>{unitLbl}</div>
                   <div style={{fontSize:9,color:"rgba(0,255,65,.25)",marginTop:4}}>
                     {unit==="MOA"?`${signU(sol.dropMoad??sol.dropMoa/3.4377,3)} mrad`:`${signU(sol.dropMoa*3.4377)} MOA`}
@@ -1214,16 +1529,16 @@ export default function App(){
                 </div>
                 <div className="card" style={{borderColor:"rgba(0,212,255,.25)"}}>
                   <div className="lbl">DERIVA VENTO</div>
-                  <div className="orb" style={{fontSize:34,color:Math.abs(sol.windMoa)>1.5?AMB:GRN,lineHeight:1}}>{signU(sol.windMoa)}</div>
+                  <div className="orb" style={{fontSize:34,color:Math.abs(sol.windMoa)>1.5?AMB:T.grn,lineHeight:1}}>{signU(sol.windMoa)}</div>
                   <div style={{fontSize:9,color:"rgba(0,255,65,.35)",marginTop:2}}>{unitLbl}</div>
                   <div style={{fontSize:9,color:"rgba(0,212,255,.45)",marginTop:4}}>{wx.wind}m/s@{wx.windAngle}°</div>
                 </div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
                 {[
-                  ["TOF",sol.tofMs,"ms",GRN],
-                  ["VEL",U.vel(sol.velMs,units),U.velL(units),sol.supersonic?GRN:AMB],
-                  ["ENERGIA",U.en(sol.eneJ,units),U.enL(units),GRN],
+                  ["TOF",sol.tofMs,"ms",T.grn],
+                  ["VEL",U.vel(sol.velMs,units),U.velL(units),sol.supersonic?T.grn:AMB],
+                  ["ENERGIA",U.en(sol.eneJ,units),U.enL(units),T.grn],
                   ["SPIN",signU(sol.sdMoa,unit==="MOA"?2:3),unitLbl,"rgba(0,255,65,.5)"],
                 ].map(([l,v,u,c])=>(
                   <div key={l} style={{background:"rgba(0,255,65,.025)",border:"1px solid rgba(0,255,65,.08)",padding:"8px 4px",textAlign:"center",borderRadius:2}}>
@@ -1255,8 +1570,8 @@ export default function App(){
                 style={{display:"grid",gridTemplateColumns:"44px 1fr 1fr 44px 36px",gap:4,
                   padding:"6px 6px",border:`1px solid ${r.dist===dist?"rgba(0,255,65,.3)":"rgba(0,255,65,.06)"}`,
                   background:r.dist===dist?"rgba(0,255,65,.06)":"transparent",marginBottom:2,cursor:"pointer",borderRadius:2}}>
-                <div className="orb" style={{fontSize:11,color:GRN}}>{r.dist}m</div>
-                <div className="orb" style={{fontSize:13,color:r.dropMoa>=0?GRN:AMB}}>{signU(r.dropMoa??0,1)}</div>
+                <div className="orb" style={{fontSize:11,color:T.grn}}>{r.dist}m</div>
+                <div className="orb" style={{fontSize:13,color:r.dropMoa>=0?T.grn:AMB}}>{signU(r.dropMoa??0,1)}</div>
                 <div className="orb" style={{fontSize:13,color:Math.abs(r.windMoa??0)>0.5?CYN:"rgba(0,255,65,.4)"}}>{signU(r.windMoa??0,1)}</div>
                 <div style={{fontSize:9,color:"rgba(0,255,65,.45)"}}>{r.tofMs}ms</div>
                 <div style={{fontSize:8,color:r.supersonic===false?AMB:"rgba(0,255,65,.4)"}}>{r.velMs}</div>
@@ -1296,7 +1611,7 @@ export default function App(){
             ):(
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div>
-                  <div style={{fontSize:10,color:GRN}}>◉ {bleName}</div>
+                  <div style={{fontSize:10,color:T.grn}}>◉ {bleName}</div>
                   <div style={{fontSize:7,color:"rgba(0,255,65,.4)"}}>Dati live</div>
                 </div>
                 <button className="btn-out red" style={{fontSize:9,padding:"6px 10px"}} onClick={disconnectCalypso}>DISC.</button>
@@ -1304,26 +1619,6 @@ export default function App(){
             )}
             {bleError&&<div style={{fontSize:8,color:AMB,marginTop:8}}>{bleError}</div>}
           </div>
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>KESTREL 5700 ELITE BLE</div>
-            {!kestrelConnected?(
-              <button className="btn-prim" style={{width:"100%",background:CYN,color:"#020c04"}}
-                onClick={connectKestrel}>◉ CONNETTI KESTREL</button>
-            ):(
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div>
-                  <div style={{fontSize:10,color:CYN}}>◉ {kestrelName}</div>
-                  <div style={{fontSize:7,color:"rgba(0,212,255,.4)"}}>Temp · Vento · Umidità live</div>
-                </div>
-                <button className="btn-out" style={{fontSize:9,padding:"6px 10px",color:RED,borderColor:"rgba(255,51,68,.3)"}}
-                  onClick={disconnectKestrel}>DISC.</button>
-              </div>
-            )}
-            {bleError&&bleError.includes("Kestrel")&&(
-              <div style={{fontSize:8,color:AMB,marginTop:6}}>{bleError}</div>
-            )}
-          </div>
-
           <div className="card">
             <div className="lbl" style={{marginBottom:8}}>ATMOSFERA</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
@@ -1347,29 +1642,6 @@ export default function App(){
             </div>
           </div>
           <div className="card">
-            <div className="lbl" style={{marginBottom:6}}>GARMIN XERO C1 — CRONOGRAFO</div>
-            <div style={{fontSize:7,color:"rgba(0,255,65,.3)",marginBottom:8,lineHeight:1.7}}>
-              Il Garmin Xero C1 usa ANT+, non supportato via browser.
-              Inserisci manualmente la MV misurata — verrà usata nel calcolo balistico.
-            </div>
-            <MVPanel
-              mvList={mvList}
-              onAdd={v=>setMvList(l=>[...l,v])}
-              onRemove={i=>setMvList(l=>l.filter((_,j)=>j!==i))}
-              onApply={avg=>{setWx(w=>({...w,mv:+avg.toFixed(1)}));speak(`MV ${avg.toFixed(1)} metri al secondo`)}}
-              appliedMv={wx.mv}
-            />
-            {wx.mv&&(
-              <div style={{marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center",
-                padding:"6px 10px",background:"rgba(0,255,65,.04)",border:"1px solid rgba(0,255,65,.12)"}}>
-                <span style={{fontSize:9,color:GRN}}>MV attiva: <span className="orb">{wx.mv} m/s</span></span>
-                <button className="btn-out" style={{fontSize:8,padding:"4px 10px"}}
-                  onClick={()=>setWx(w=>({...w,mv:null}))}>RESET</button>
-              </div>
-            )}
-          </div>
-
-          <div className="card">
             <div className="lbl" style={{marginBottom:6}}>MV CRONOGRAFO</div>
             <MVPanel mvList={mvList} onAdd={v=>setMvList(l=>[...l,v])} onRemove={i=>setMvList(l=>l.filter((_,j)=>j!==i))}
               onApply={avg=>{setWx(w=>({...w,mv:+avg.toFixed(1)}));speak(`MV ${avg.toFixed(1)}`)}}
@@ -1383,6 +1655,75 @@ export default function App(){
       {/* ═══ PANNELLO STAGE ═══ */}
       {mainTab==="home"&&activePanel==="stage"&&(
         <>
+          {/* GARA ATTIVA / CARICATA */}
+          {gara&&(
+            <div className="card" style={{border:`1px solid ${garaActive?"rgba(204,68,255,.5)":"rgba(204,68,255,.25)"}`,
+              background:garaActive?"rgba(204,68,255,.06)":"rgba(204,68,255,.02)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div>
+                  <div className="lbl" style={{color:PRP}}>GARA {garaActive?"IN CORSO":"CARICATA"}</div>
+                  <div style={{fontSize:11,color:PRP,fontFamily:"Orbitron,monospace",
+                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:200}}>{gara.name}</div>
+                </div>
+                <span style={{color:RED,fontSize:20,cursor:"pointer",padding:"0 6px"}}
+                  onClick={()=>{garaRef.current=null;setGara(null);setGaraActive(false);speak("Gara annullata")}}>×</span>
+              </div>
+              {/* Progressione stage nella gara */}
+              <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                {gara.stages.map((s,i)=>(
+                  <div key={s.id} style={{
+                    padding:"4px 8px",fontSize:8,fontFamily:"Orbitron,monospace",borderRadius:2,
+                    background:i<gara.currentIdx?"rgba(0,255,65,.12)":i===gara.currentIdx?"rgba(204,68,255,.25)":"rgba(204,68,255,.06)",
+                    border:`1px solid ${i<gara.currentIdx?"rgba(0,255,65,.3)":i===gara.currentIdx?PRP:"rgba(204,68,255,.2)"}`,
+                    color:i<gara.currentIdx?"rgba(0,255,65,.6)":i===gara.currentIdx?PRP:"rgba(204,68,255,.4)"}}>
+                    {i<gara.currentIdx?"✓ ":i===gara.currentIdx?"▶ ":""}{i+1}
+                  </div>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                {!garaActive&&(
+                  <button className="btn-prim prp" style={{flex:1,fontSize:10}}
+                    onClick={()=>startGara(gara)}>▶ AVVIA GARA</button>
+                )}
+                {gara.currentIdx<gara.stages.length&&!stageActive&&(
+                  <button className="btn-prim prp" style={{flex:1,fontSize:10}}
+                    onClick={()=>{const s=gara.stages[gara.currentIdx];if(s)loadStage(s)}}>
+                    ▶ STAGE {gara.currentIdx+1}
+                  </button>
+                )}
+                <button className="btn-out" style={{fontSize:10,padding:"10px 14px"}}
+                  onClick={()=>{
+                    const imported=stages.filter(s=>s.id>5)
+                    if(imported.length>1){
+                      const ng={id:Date.now(),name:"Gara custom",stages:imported,currentIdx:0}
+                      garaRef.current=ng;setGara(ng);setGaraActive(false)
+                      speak(`Gara aggiornata: ${imported.length} stage`)
+                    }
+                  }}>RICOSTRUISCI</button>
+              </div>
+              <div style={{fontSize:7,color:"rgba(204,68,255,.4)",marginTop:8,lineHeight:1.7}}>
+                Voce: "Vega avvia gara" · "Vega next" · "Vega stato gara" · "Vega annulla gara"
+              </div>
+            </div>
+          )}
+
+          {/* Crea gara manuale dagli stage importati */}
+          {!gara&&stages.filter(s=>s.id>5).length>=2&&(
+            <div className="card" style={{border:"1px dashed rgba(204,68,255,.3)",background:"rgba(204,68,255,.02)"}}>
+              <div className="lbl" style={{color:PRP,marginBottom:6}}>CREA GARA</div>
+              <div style={{fontSize:9,color:"rgba(204,68,255,.6)",marginBottom:8}}>
+                {stages.filter(s=>s.id>5).length} stage importati disponibili
+              </div>
+              <button className="btn-prim prp" style={{width:"100%",fontSize:10}}
+                onClick={()=>{
+                  const imported=stages.filter(s=>s.id>5)
+                  const ng={id:Date.now(),name:"Gara",stages:imported,currentIdx:0}
+                  garaRef.current=ng;setGara(ng);setGaraActive(false)
+                  speak(`Gara creata: ${imported.length} stage`)
+                }}>RAGGRUPPA IN GARA</button>
+            </div>
+          )}
+
           <div className="card">
             <div className="lbl" style={{marginBottom:8}}>STAGE LIBRARY — {stages.length}</div>
             {stages.map(s=>(
@@ -1391,7 +1732,7 @@ export default function App(){
                 background:currentStage?.id===s.id?"rgba(255,170,0,.04)":"transparent",
                 cursor:"pointer",transition:"all .15s",marginBottom:5,borderRadius:2}}>
                 <div style={{minWidth:0,flex:1}} onClick={()=>loadStage(s)}>
-                  <div style={{fontSize:10,color:currentStage?.id===s.id?AMB:GRN,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}</div>
+                  <div style={{fontSize:10,color:currentStage?.id===s.id?AMB:T.grn,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}</div>
                   <div style={{fontSize:7,color:"rgba(0,255,65,.35)",marginTop:2}}>{s.desc} · {s.par}s · {s.targets.length}T</div>
                 </div>
                 <div style={{display:"flex",gap:6,flexShrink:0}}>
@@ -1403,14 +1744,58 @@ export default function App(){
             ))}
           </div>
           <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>IMPORTA PDF / TXT</div>
-            <label style={{display:"block",padding:"18px",border:"1px dashed rgba(0,255,65,.25)",
-              textAlign:"center",cursor:"pointer",background:"rgba(0,255,65,.02)",borderRadius:2}}>
-              <input type="file" accept=".pdf,.txt" style={{display:"none"}} onChange={e=>handlePdfFile(e.target.files[0])}/>
-              <div style={{fontSize:28,color:"rgba(0,255,65,.3)",marginBottom:6}}>⊕</div>
-              <div style={{fontSize:10,color:"rgba(0,255,65,.5)"}}>{pdfLoading?"Analisi...":"TAP PER SELEZIONARE"}</div>
-            </label>
-            {bleError&&<div style={{fontSize:8,color:AMB,marginTop:6}}>{bleError}</div>}
+            <div className="lbl" style={{marginBottom:8}}>IMPORTA STAGE</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+
+              {/* PDF / TXT */}
+              <label style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                padding:"16px 8px",border:"1px dashed rgba(0,255,65,.25)",
+                textAlign:"center",cursor:"pointer",background:"rgba(0,255,65,.02)",borderRadius:4,gap:6}}>
+                <input type="file" accept=".pdf,.txt" style={{display:"none"}}
+                  onChange={e=>handlePdfFile(e.target.files[0])}/>
+                <div style={{fontSize:24,color:"rgba(0,255,65,.4)"}}>⊕</div>
+                <div style={{fontSize:9,color:"rgba(0,255,65,.5)",lineHeight:1.4}}>
+                  {pdfLoading?"Analisi...":"PDF / TXT"}
+                </div>
+              </label>
+
+              {/* FOTOCAMERA */}
+              <label style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                padding:"16px 8px",border:`1px dashed ${camLoading?"rgba(0,212,255,.5)":"rgba(0,212,255,.25)"}`,
+                textAlign:"center",cursor:"pointer",
+                background:camLoading?"rgba(0,212,255,.04)":"rgba(0,212,255,.01)",borderRadius:4,gap:6,
+                position:"relative",overflow:"hidden"}}>
+                <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
+                  onChange={e=>handleCameraPhoto(e.target.files[0])}/>
+                {camPreview?(
+                  <img src={camPreview} alt="preview"
+                    style={{position:"absolute",inset:0,width:"100%",height:"100%",
+                      objectFit:"cover",opacity:.25,borderRadius:4}}/>
+                ):null}
+                <div style={{fontSize:22,color:`rgba(0,212,255,${camLoading?.6:.4})`,zIndex:1}}>
+                  {camLoading?"◌":"◎"}
+                </div>
+                <div style={{fontSize:9,color:`rgba(0,212,255,${camLoading?.8:.5})`,lineHeight:1.4,zIndex:1}}>
+                  {camLoading?"OCR...":"FOTOCAMERA"}
+                </div>
+                {camLoading&&(
+                  <div style={{position:"absolute",bottom:0,left:0,height:2,
+                    background:`linear-gradient(90deg,${CYN},rgba(0,212,255,.2))`,
+                    animation:"bleBlip .8s ease-in-out infinite",width:"60%",zIndex:1}}/>
+                )}
+              </label>
+            </div>
+
+            {/* Messaggio errore / stato */}
+            {bleError&&(
+              <div style={{fontSize:8,color:AMB,marginTop:8,padding:"5px 8px",
+                background:"rgba(255,170,0,.04)",border:"1px solid rgba(255,170,0,.15)",borderRadius:3}}>
+                {bleError}
+              </div>
+            )}
+            <div style={{fontSize:7,color:"rgba(0,255,65,.25)",marginTop:8,lineHeight:1.7}}>
+              Fotocamera: scatta la photo del foglio stage — OCR estrae automaticamente le distanze.
+            </div>
           </div>
           {stageSols.length>0&&currentStage&&(
             <div className="card">
@@ -1421,8 +1806,8 @@ export default function App(){
                   background:i===tgtIdx&&stageActive?"rgba(255,170,0,.04)":"transparent",
                   marginBottom:2,cursor:"pointer",borderRadius:2}} onClick={()=>{setDist(s.dist);setActivePanel(null)}}>
                   <div className="orb" style={{fontSize:9,color:i===tgtIdx&&stageActive?AMB:"rgba(0,255,65,.35)"}}>T{s.id}</div>
-                  <div className="orb" style={{fontSize:11,color:i===tgtIdx&&stageActive?AMB:GRN}}>{s.dist}m</div>
-                  <div className="orb" style={{fontSize:13,color:GRN}}>{signU(s.dropMoa??0,1)} <span style={{fontSize:6,opacity:.4}}>{unitLbl}</span></div>
+                  <div className="orb" style={{fontSize:11,color:i===tgtIdx&&stageActive?AMB:T.grn}}>{s.dist}m</div>
+                  <div className="orb" style={{fontSize:13,color:T.grn}}>{signU(s.dropMoa??0,1)} <span style={{fontSize:6,opacity:.4}}>{unitLbl}</span></div>
                   <div className="orb" style={{fontSize:13,color:Math.abs(s.windMoa??0)>0.5?CYN:"rgba(0,255,65,.4)"}}>{signU(s.windMoa??0,1)}</div>
                   <div style={{fontSize:8,color:s.supersonic===false?AMB:"rgba(0,255,65,.4)"}}>{s.velMs}</div>
                 </div>
@@ -1462,7 +1847,7 @@ export default function App(){
                 <div className="toggle-wrap" style={{flex:1}}
                   onClick={()=>setTimerAlerts(prev=>prev.map(a=>a.id===al.id?{...a,enabled:!a.enabled}:a))}>
                   <div className={`toggle-bg${al.enabled?" on":""}`}><div className="toggle-knob"/></div>
-                  <span style={{fontSize:10,color:al.enabled?GRN:"rgba(0,255,65,.35)"}}>{al.label} — {al.secs}s</span>
+                  <span style={{fontSize:10,color:al.enabled?T.grn:"rgba(0,255,65,.35)"}}>{al.label} — {al.secs}s</span>
                 </div>
                 <span style={{color:RED,fontSize:16,cursor:"pointer",padding:"0 4px"}}
                   onClick={()=>setTimerAlerts(prev=>prev.filter(a=>a.id!==al.id))}>×</span>
@@ -1484,7 +1869,7 @@ export default function App(){
             <div className="toggle-wrap" style={{marginTop:12}}
               onClick={()=>setCountdown10(v=>!v)}>
               <div className={`toggle-bg${countdown10?" on":""}`}><div className="toggle-knob"/></div>
-              <span style={{fontSize:10,color:countdown10?GRN:"rgba(0,255,65,.35)"}}>Bip countdown ultimi 10 secondi</span>
+              <span style={{fontSize:10,color:countdown10?T.grn:"rgba(0,255,65,.35)"}}>Bip countdown ultimi 10 secondi</span>
             </div>
             {/* 3 bip allo scadere — sempre attivo */}
             <div style={{fontSize:8,color:"rgba(0,255,65,.3)",marginTop:8,lineHeight:1.8}}>
@@ -1497,7 +1882,7 @@ export default function App(){
             <div className="lbl" style={{marginBottom:8}}>RILEVAMENTO COLPO AUDIO</div>
             <div className="toggle-wrap" style={{marginBottom:10}} onClick={()=>setShotDetect(v=>!v)}>
               <div className={`toggle-bg${shotDetect?" on":""}`}><div className="toggle-knob"/></div>
-              <span style={{fontSize:10,color:shotDetect?GRN:"rgba(0,255,65,.4)"}}>
+              <span style={{fontSize:10,color:shotDetect?T.grn:"rgba(0,255,65,.4)"}}>
                 {shotDetect?"ATTIVO":"DISATTIVATO"}
               </span>
             </div>
@@ -1534,28 +1919,26 @@ export default function App(){
           </div>
           {profiles.length===0&&(
             <div className="card" style={{textAlign:"center",padding:"30px"}}>
-              <div style={{fontSize:30,color:"rgba(0,255,65,.1)",marginBottom:10}}>⊙</div>
-              <div style={{fontSize:10,color:"rgba(0,255,65,.3)"}}>Nessun profilo.<br/>Crea il tuo setup fucile.</div>
+              <div style={{fontSize:30,color:dk?"rgba(0,255,65,.1)":T.textDim,marginBottom:10}}>⊙</div>
+              <div style={{fontSize:10,color:dk?"rgba(0,255,65,.3)":T.textDim}}>Nessun profilo.<br/>Crea il tuo setup fucile.</div>
             </div>
           )}
           {profiles.map(p=>(
             <div key={p.id} style={{
-              padding:"12px",border:`1px solid ${activeProfileId===p.id?"rgba(0,255,65,.5)":"rgba(0,255,65,.12)"}`,
-              background:activeProfileId===p.id?"rgba(0,255,65,.06)":"rgba(0,255,65,.02)",
-              marginBottom:8,borderRadius:2}}>
+              padding:"12px",border:`1px solid ${activeProfileId===p.id?(dk?"rgba(0,255,65,.5)":T.accent):(dk?"rgba(0,255,65,.12)":T.cardBorder)}`,
+              background:activeProfileId===p.id?(dk?"rgba(0,255,65,.06)":"rgba(0,122,255,.05)"):(dk?"rgba(0,255,65,.02)":T.card),
+              marginBottom:8,borderRadius:dk?2:12}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,color:activeProfileId===p.id?GRN:AMB,fontFamily:"Orbitron,monospace",
+                  <div style={{fontSize:13,color:activeProfileId===p.id?T.grn:AMB,fontFamily:"Orbitron,monospace",
                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name||"—"}</div>
-                  <div style={{fontSize:8,color:"rgba(0,255,65,.45)",marginTop:3}}>
+                  <div style={{fontSize:8,color:dk?"rgba(0,255,65,.45)":T.textDim,marginTop:3}}>
                     {p.caliber} · {p.ammoKey} · ◎{p.zeroM}m
-                    {p.bcValue>0&&<span style={{color:CYN}}> · BC✓{p.bcValue}</span>}
-                    {p.mvMs&&<span style={{color:GRN}}> · MV:{p.mvMs}m/s</span>}
                   </div>
-                  <div style={{fontSize:8,color:"rgba(0,212,255,.45)",marginTop:2}}>
+                  <div style={{fontSize:8,color:dk?"rgba(0,212,255,.45)":CYN,marginTop:2}}>
                     {p.scopeName||"—"} · {p.scopePlane} · h={p.scopeHeightCm}cm · {p.reticleType} {p.clickValue}cl
                   </div>
-                  <div style={{fontSize:7,color:"rgba(0,255,65,.3)",marginTop:2}}>
+                  <div style={{fontSize:7,color:dk?"rgba(0,255,65,.3)":T.textDim,marginTop:2}}>
                     Canna: {p.barrelLengthIn}" · Twist: 1:{p.twistDen}
                     {p.mvMs?" · MV:"+p.mvMs+"m/s":""}
                   </div>
@@ -1572,270 +1955,388 @@ export default function App(){
         </>
       )}
 
-      {/* ═══ EDITOR PROFILO ═══ */}
-      {mainTab==="profiles"&&activePanel==="profile_edit"&&editingProfile&&(
+      {/* ═══ EDITOR PROFILO (AB-style) ═══ */}
+      {mainTab==="profiles"&&activePanel==="profile_edit"&&editingProfile&&(()=>{
+        // helpers locali
+        const ep=editingProfile
+        const set=k=>e=>setEditingProfile(p=>({...p,[k]:e.target.value}))
+        const setN=k=>e=>setEditingProfile(p=>({...p,[k]:+e.target.value}))
+        const setNOpt=k=>e=>setEditingProfile(p=>({...p,[k]:e.target.value?+e.target.value:null}))
+        // stile card AB chiaro
+        const LC="#0a0f0a"
+        const LBL={fontSize:11,color:CYN,fontFamily:"'IBM Plex Mono',monospace",letterSpacing:".06em",marginBottom:4}
+        const CARD={background:"rgba(0,212,255,.03)",border:"1px solid rgba(0,212,255,.12)",borderRadius:6,padding:"14px",marginBottom:10}
+        const HDR={display:"flex",justifyContent:"space-between",alignItems:"center",
+          fontFamily:"Orbitron,monospace",fontSize:11,color:"#e8f0e8",letterSpacing:".1em",
+          paddingBottom:8,marginBottom:10,borderBottom:"1px solid rgba(255,255,255,.07)"}
+        const IN={background:"rgba(0,0,0,.35)",border:"1px solid rgba(0,212,255,.18)",borderRadius:4,
+          color:"#e8f0e8",fontFamily:"'IBM Plex Mono',monospace",fontSize:13,padding:"10px 12px",
+          width:"100%",boxSizing:"border-box",minHeight:44}
+        const UNIT={fontSize:9,color:"rgba(0,212,255,.6)",fontFamily:"'IBM Plex Mono',monospace",
+          marginLeft:4,letterSpacing:".1em"}
+        const INROW={display:"flex",alignItems:"center",background:"rgba(0,0,0,.35)",
+          border:"1px solid rgba(0,212,255,.18)",borderRadius:4,overflow:"hidden"}
+        const INFIELD={...IN,border:"none",background:"transparent",flex:1}
+        const INUNIT={...UNIT,padding:"0 10px",background:"rgba(0,212,255,.06)",
+          alignSelf:"stretch",display:"flex",alignItems:"center",borderLeft:"1px solid rgba(0,212,255,.12)"}
+
+        // Toggle switch
+        const Toggle=({val,onChange})=>(
+          <div onClick={onChange} style={{width:44,height:26,borderRadius:13,cursor:"pointer",position:"relative",
+            background:val?"rgba(0,255,65,.5)":"rgba(255,255,255,.1)",
+            border:`1px solid ${val?"rgba(0,255,65,.4)":"rgba(255,255,255,.15)"}`,
+            transition:"background .2s",flexShrink:0}}>
+            <div style={{position:"absolute",top:3,left:val?20:3,width:18,height:18,borderRadius:"50%",
+              background:val?GRN:"rgba(255,255,255,.5)",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,.4)"}}/>
+          </div>
+        )
+
+        // calcola Sg approssimativo (Miller formula)
+        const dCm=(ep.bulletDiaMm||0)/10
+        const mGr=ep.bulletWeightGr||0
+        const lCm=(ep.bulletLengthMm||0)/10
+        const twistCm=ep.twistCm||40.64
+        const mvMs=ep.mvMs||326
+        const Sg=dCm>0&&mGr>0&&lCm>0
+          ? +(30*(mGr/15.43)/(Math.pow(dCm*10,3)*(lCm*10/((dCm*10)*Math.PI))*(Math.pow(twistCm/10/(dCm*10),2)))).toFixed(2)
+          : null
+
+        return(
         <>
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>IDENTITÀ</div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {[["NOME PROFILO","name",editingProfile.name,"es. Bergara B14 .22LR"],
-                ["CALIBRO","caliber",editingProfile.caliber,"es. .22LR"]].map(([l,k,v,ph])=>(
-                <div key={k}>
-                  <div className="lbl">{l}</div>
-                  <input type="text" className="vg-in" placeholder={ph} value={v}
-                    onChange={e=>setEditingProfile(p=>({...p,[k]:e.target.value}))}/>
-                </div>
+          {/* ── Nome profilo ── */}
+          <div style={{marginBottom:10}}>
+            <div style={LBL}>NOME PROFILO</div>
+            <input style={IN} type="text" placeholder="es. Bergara B14 .22LR" value={ep.name} onChange={set("name")}/>
+          </div>
+
+          {/* ── Bullet Data ── */}
+          <div style={CARD}>
+            <div style={HDR}><span>BULLET DATA</span></div>
+            {/* Modello BC */}
+            <div style={LBL}>MODELLO</div>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              {["G1","G7"].map(v=>(
+                <button key={v} onClick={()=>setEditingProfile(p=>({...p,bcModel:v}))}
+                  style={{flex:1,padding:"10px",borderRadius:20,border:`2px solid ${ep.bcModel===v?GRN:"rgba(255,255,255,.15)"}`,
+                    background:ep.bcModel===v?"rgba(0,255,65,.12)":"transparent",
+                    color:ep.bcModel===v?GRN:"rgba(255,255,255,.5)",
+                    fontFamily:"Orbitron,monospace",fontSize:12,cursor:"pointer",display:"flex",
+                    alignItems:"center",gap:6,justifyContent:"center"}}>
+                  <div style={{width:16,height:16,borderRadius:"50%",border:`2px solid ${ep.bcModel===v?GRN:"rgba(255,255,255,.3)"}`,
+                    background:ep.bcModel===v?"rgba(0,255,65,.6)":"transparent",display:"inline-block",verticalAlign:"middle"}}/>
+                  {v}
+                </button>
               ))}
             </div>
-          </div>
-
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>CANNA</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {/* Grid dati proiettile */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
               <div>
-                <div className="lbl">LUNGHEZZA (pollici)</div>
-                <input type="number" className="vg-in" step={.5} value={editingProfile.barrelLengthIn}
-                  onChange={e=>setEditingProfile(p=>({...p,barrelLengthIn:+e.target.value}))}/>
-              </div>
-              <div>
-                <div className="lbl">TWIST 1:___"</div>
-                <input type="number" className="vg-in" step={1} value={editingProfile.twistDen}
-                  onChange={e=>setEditingProfile(p=>({...p,twistDen:+e.target.value}))}/>
-              </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>PROIETTILE CUSTOM</div>
-            <div style={{fontSize:7,color:"rgba(0,255,65,.3)",marginBottom:8}}>
-              Lascia vuoto per usare i valori del catalogo munizioni
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              <div style={{gridColumn:"1/-1"}}>
-                <div className="lbl">NOME PROIETTILE</div>
-                <input type="text" className="vg-in" placeholder="es. Lapua Center-X 40gr"
-                  value={editingProfile.bulletName??""} onChange={e=>setEditingProfile(p=>({...p,bulletName:e.target.value}))}/>
-              </div>
-              <div>
-                <div className="lbl">PESO (gr)</div>
-                <input type="number" className="vg-in" step={.5} placeholder="es. 40"
-                  value={editingProfile.bulletWeightGr||""} onChange={e=>setEditingProfile(p=>({...p,bulletWeightGr:+e.target.value}))}/>
-              </div>
-              <div>
-                <div className="lbl">DIAMETRO (mm)</div>
-                <input type="number" className="vg-in" step={.01} placeholder="es. 5.59"
-                  value={editingProfile.bulletDiaMm||""} onChange={e=>setEditingProfile(p=>({...p,bulletDiaMm:+e.target.value}))}/>
-              </div>
-              <div>
-                <div className="lbl">MODELLO BC</div>
-                <div style={{display:"flex",gap:4}}>
-                  {["G7","G1"].map(v=>(
-                    <button key={v} className={`pill${editingProfile.bcModel===v?" on":""}`}
-                      style={{flex:1}} onClick={()=>setEditingProfile(p=>({...p,bcModel:v}))}>{v}</button>
-                  ))}
+                <div style={LBL}>DIAMETRO</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} placeholder="0.000"
+                    value={ep.bulletDiaMm||""} onChange={setN("bulletDiaMm")}/>
+                  <span style={INUNIT}>CM</span>
                 </div>
               </div>
               <div>
-                <div className="lbl">BC {editingProfile.bcModel??'G7'}</div>
-                <input type="number" className="vg-in" step={.001} placeholder="es. 0.065"
-                  value={editingProfile.bcValue||""} onChange={e=>setEditingProfile(p=>({...p,bcValue:+e.target.value}))}/>
+                <div style={LBL}>PESO</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.5} placeholder="0.0"
+                    value={ep.bulletWeightGr||""} onChange={setN("bulletWeightGr")}/>
+                  <span style={INUNIT}>GR</span>
+                </div>
               </div>
               <div>
-                <div className="lbl">MV CUSTOM (m/s)</div>
-                <input type="number" className="vg-in" step={1} placeholder="vuoto = tabellare"
-                  value={editingProfile.mvMs??""} onChange={e=>setEditingProfile(p=>({...p,mvMs:e.target.value?+e.target.value:null}))}/>
+                <div style={LBL}>BC {ep.bcModel||"G1"}</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} placeholder="0.000"
+                    value={ep.bcValue||""} onChange={setN("bcValue")}/>
+                  <span style={INUNIT}>{ep.bcModel||"G1"}</span>
+                </div>
+              </div>
+              <div>
+                <div style={LBL}>DRAG FACTOR</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} placeholder="1.000"
+                    value={ep.customDragFactor??1.0} onChange={setN("customDragFactor")}/>
+                </div>
+              </div>
+              <div style={{gridColumn:"1/-1"}}>
+                <div style={LBL}>LUNGHEZZA</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} placeholder="0.000"
+                    value={ep.bulletLengthMm||""} onChange={setN("bulletLengthMm")}/>
+                  <span style={INUNIT}>CM</span>
+                </div>
               </div>
             </div>
-          </div>
-
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>MUNIZIONE</div>
-            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
+            {/* Munizione catalogo solver */}
+            <div style={{...LBL,marginTop:4}}>MUNIZIONE SOLVER (catalogo)</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
               {Object.keys(AMMO_CATALOG).map(g=>(
-                <button key={g} className={`pill${editingProfile.ammoGroup===g?" on":""}`}
+                <button key={g} className={`pill${ep.ammoGroup===g?" on":""}`}
                   onClick={()=>setEditingProfile(p=>({...p,ammoGroup:g,ammoKey:Object.keys(AMMO_CATALOG[g])[0]}))}>
                   {g}
                 </button>
               ))}
             </div>
-            <select className="vg-sel" value={editingProfile.ammoKey}
+            <select className="vg-sel" value={ep.ammoKey}
               onChange={e=>setEditingProfile(p=>({...p,ammoKey:e.target.value}))}>
-              {Object.keys(AMMO_CATALOG[editingProfile.ammoGroup]).map(k=>(
+              {Object.keys(AMMO_CATALOG[ep.ammoGroup]).map(k=>(
                 <option key={k} value={k}>{k}</option>
               ))}
             </select>
           </div>
 
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>OTTICA</div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {/* ── Gun Data ── */}
+          <div style={CARD}>
+            <div style={HDR}><span>GUN DATA</span></div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
               <div>
-                <div className="lbl">MODELLO OTTICA</div>
-                <input type="text" className="vg-in" placeholder="es. Discovery XED 6-36x56"
-                  value={editingProfile.scopeName}
-                  onChange={e=>setEditingProfile(p=>({...p,scopeName:e.target.value}))}/>
+                <div style={LBL}>VELOCITÀ BOCCA</div>
+                <div style={INROW}>
+                  <input style={{...INFIELD,color:ep.useMvTempTable?"rgba(255,255,255,.3)":undefined}}
+                    type="number" step={.1} placeholder="326.1"
+                    value={ep.mvMs??""} onChange={setNOpt("mvMs")}/>
+                  <span style={INUNIT}>M/S</span>
+                </div>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                <div>
-                  <div className="lbl">PIANO FOCALE</div>
-                  <div style={{display:"flex",gap:4}}>
-                    {["FFP","SFP"].map(v=>(
-                      <button key={v} className={`pill${editingProfile.scopePlane===v?" on":""}`}
-                        style={{flex:1}} onClick={()=>setEditingProfile(p=>({...p,scopePlane:v}))}>{v}</button>
-                    ))}
-                  </div>
+              <div>
+                <div style={LBL}>ZERO</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={5} placeholder="50"
+                    value={ep.zeroM||""} onChange={setN("zeroM")}/>
+                  <span style={INUNIT}>M</span>
                 </div>
-                <div>
-                  <div className="lbl">RETICOLO</div>
-                  <div style={{display:"flex",gap:4}}>
-                    {["mrad","MOA","ibrido"].map(v=>(
-                      <button key={v} className={`pill${editingProfile.reticleType===v?" on":""}`}
-                        style={{flex:1,fontSize:9}} onClick={()=>setEditingProfile(p=>({...p,reticleType:v}))}>{v}</button>
-                    ))}
-                  </div>
+              </div>
+              <div>
+                <div style={LBL}>ALTEZZA LINEA VISIVA</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.1} placeholder="6.50"
+                    value={ep.scopeHeightCm||""} onChange={setN("scopeHeightCm")}/>
+                  <span style={INUNIT}>CM</span>
                 </div>
-                <div>
-                  <div className="lbl">H LINEA VISIVA (cm)</div>
-                  <input type="number" className="vg-in" step={.1} value={editingProfile.scopeHeightCm}
-                    onChange={e=>setEditingProfile(p=>({...p,scopeHeightCm:+e.target.value}))}/>
-                </div>
-                <div>
-                  <div className="lbl">CLICK VALUE</div>
-                  <input type="number" className="vg-in" step={.01} value={editingProfile.clickValue}
-                    onChange={e=>setEditingProfile(p=>({...p,clickValue:+e.target.value}))}/>
-                </div>
-                <div>
-                  <div className="lbl">ZOOM MIN</div>
-                  <input type="number" className="vg-in" step={1} value={editingProfile.zoomMin??6}
-                    onChange={e=>setEditingProfile(p=>({...p,zoomMin:+e.target.value}))}/>
-                </div>
-                <div>
-                  <div className="lbl">ZOOM MAX</div>
-                  <input type="number" className="vg-in" step={1} value={editingProfile.zoomMax??36}
-                    onChange={e=>setEditingProfile(p=>({...p,zoomMax:+e.target.value}))}/>
-                </div>
-                <div>
-                  <div className="lbl">HASH {editingProfile.reticleType??'mrad'}</div>
-                  <input type="number" className="vg-in" step={.1} value={editingProfile.reticleHash??1.0}
-                    onChange={e=>setEditingProfile(p=>({...p,reticleHash:+e.target.value}))}/>
-                </div>
-                <div>
-                  <div className="lbl">SUB-HASH</div>
-                  <input type="number" className="vg-in" step={.1} value={editingProfile.reticleSubHash??0.5}
-                    onChange={e=>setEditingProfile(p=>({...p,reticleSubHash:+e.target.value}))}/>
+              </div>
+              <div>
+                <div style={LBL}>TWIST RATE</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.01} placeholder="40.64"
+                    value={ep.twistCm||""} onChange={setN("twistCm")}/>
+                  <span style={INUNIT}>CM</span>
                 </div>
               </div>
             </div>
-          </div>
-
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>ZERO</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              <div>
-                <div className="lbl">ZERO (m)</div>
-                <input type="number" className="vg-in" step={5} value={editingProfile.zeroM}
-                  onChange={e=>setEditingProfile(p=>({...p,zeroM:+e.target.value}))}/>
-              </div>
-              <div>
-                <div className="lbl">MV CUSTOM (m/s)</div>
-                <input type="number" className="vg-in" step={1} placeholder="vuoto = tabellare"
-                  value={editingProfile.mvMs??""} 
-                  onChange={e=>setEditingProfile(p=>({...p,mvMs:e.target.value?+e.target.value:null}))}/>
-              </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="lbl" style={{marginBottom:6}}>NOTE</div>
-            <textarea className="vg-in" rows={3} style={{resize:"vertical"}}
-              placeholder="cariche, condizioni, note gara..."
-              value={editingProfile.notes??""} onChange={e=>setEditingProfile(p=>({...p,notes:e.target.value}))}/>
-          </div>
-
-          <div className="card" style={{borderColor:"rgba(0,212,255,.2)"}}>
-            <div className="lbl" style={{marginBottom:8,color:CYN}}>TRUING BALISTICO — BC G7</div>
-            <div style={{fontSize:8,color:"rgba(0,255,65,.4)",marginBottom:10,lineHeight:1.7}}>
-              Inserisci il drop REALE misurato al poligono per ogni distanza.
-              VEGA calcola il BC G7 truato e lo salva nel profilo.
-            </div>
-
-            {/* Tabella misure */}
-            <div style={{display:"grid",gridTemplateColumns:"52px 1fr 70px 32px",gap:4,
-              padding:"4px 0",marginBottom:4}}>
-              {["DIST","DROP REALE","UNITÀ",""].map(h=>(
-                <div key={h} style={{fontSize:6,color:"rgba(0,255,65,.3)",letterSpacing:".1em"}}>{h}</div>
+            {/* Direzione twist L/R */}
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              {["L","R"].map(v=>(
+                <button key={v} onClick={()=>setEditingProfile(p=>({...p,twistDir:v}))}
+                  style={{flex:1,padding:"10px",borderRadius:20,
+                    border:`2px solid ${ep.twistDir===v?GRN:"rgba(255,255,255,.15)"}`,
+                    background:ep.twistDir===v?"rgba(0,255,65,.12)":"transparent",
+                    color:ep.twistDir===v?GRN:"rgba(255,255,255,.5)",
+                    fontFamily:"Orbitron,monospace",fontSize:12,cursor:"pointer"}}>
+                  {v}
+                </button>
               ))}
             </div>
-            {truingRows.map((row,i)=>(
-              <div key={row.id} style={{display:"grid",gridTemplateColumns:"52px 1fr 70px 32px",
-                gap:4,marginBottom:6,alignItems:"center"}}>
-                <input type="number" className="vg-in" style={{fontSize:13,textAlign:"center"}}
-                  placeholder="m" value={row.dist||""}
-                  onChange={e=>setTruingRows(prev=>prev.map(r=>r.id===row.id?{...r,dist:+e.target.value}:r))}/>
-                <input type="number" className="vg-in" style={{fontSize:13}} step={.01}
-                  placeholder="es. 2.10" value={row.dropMeas??""} 
-                  onChange={e=>setTruingRows(prev=>prev.map(r=>r.id===row.id?{...r,dropMeas:e.target.value?+e.target.value:null}:r))}/>
-                <div style={{display:"flex",gap:2}}>
-                  {["mrad","MOA"].map(u=>(
-                    <button key={u} className={`pill${row.unit===u?" on":""}`}
-                      style={{flex:1,fontSize:8,padding:"4px 2px"}}
-                      onClick={()=>setTruingRows(prev=>prev.map(r=>r.id===row.id?{...r,unit:u}:r))}>
-                      {u}
-                    </button>
+            {/* Stability factor display */}
+            <div style={LBL}>FATTORE DI STABILITÀ (livello del mare)</div>
+            <div style={{background:"rgba(0,0,0,.3)",border:"1px solid rgba(255,170,0,.2)",borderRadius:4,
+              padding:"12px",textAlign:"center"}}>
+              <span style={{fontFamily:"Orbitron,monospace",fontSize:16,color:AMB}}>
+                Sg = {Sg!==null?Sg:"—"}
+              </span>
+              {Sg!==null&&Sg<1.5&&<div style={{fontSize:9,color:RED,marginTop:4}}>INSTABILE — aumenta twist o riduci lunghezza</div>}
+              {Sg!==null&&Sg>=1.5&&Sg<2.0&&<div style={{fontSize:9,color:AMB,marginTop:4}}>MARGINALE</div>}
+              {Sg!==null&&Sg>=2.0&&<div style={{fontSize:9,color:T.grn,marginTop:4}}>STABILE</div>}
+            </div>
+          </div>
+
+          {/* ── Scope ── */}
+          <div style={CARD}>
+            <div style={HDR}><span>SCOPE</span></div>
+            <div style={LBL}>UNITÀ OTTICA</div>
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              {["MRAD","MOA"].map(v=>(
+                <button key={v} onClick={()=>setEditingProfile(p=>({...p,scopeUnit:v,reticleType:v==="MRAD"?"mrad":"MOA"}))}
+                  style={{flex:1,padding:"10px",borderRadius:20,
+                    border:`2px solid ${ep.scopeUnit===v?CYN:"rgba(255,255,255,.15)"}`,
+                    background:ep.scopeUnit===v?"rgba(0,212,255,.1)":"transparent",
+                    color:ep.scopeUnit===v?CYN:"rgba(255,255,255,.5)",
+                    fontFamily:"Orbitron,monospace",fontSize:12,cursor:"pointer"}}>
+                  {v}
+                </button>
+              ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div>
+                <div style={LBL}>PIANO FOCALE</div>
+                <div style={{display:"flex",gap:4}}>
+                  {["FFP","SFP"].map(v=>(
+                    <button key={v} className={`pill${ep.scopePlane===v?" on":""}`}
+                      style={{flex:1}} onClick={()=>setEditingProfile(p=>({...p,scopePlane:v}))}>{v}</button>
                   ))}
                 </div>
-                {truingRows.length>1?(
-                  <span style={{color:RED,fontSize:14,cursor:"pointer",textAlign:"center"}}
-                    onClick={()=>setTruingRows(prev=>prev.filter(r=>r.id!==row.id))}>×</span>
-                ):<div/>}
               </div>
-            ))}
-
-            <div style={{display:"flex",gap:8,marginBottom:10}}>
-              <button className="btn-out" style={{fontSize:9,flex:1}}
-                onClick={()=>setTruingRows(prev=>[...prev,{id:Date.now(),dist:150,dropMeas:null,unit:"mrad"}])}>
-                + AGGIUNGI DISTANZA
-              </button>
-              <button className="btn-prim" style={{fontSize:9,flex:1,background:CYN,color:"#020c04"}}
-                onClick={computeTruing}>
-                CALCOLA BC TRUATO
-              </button>
-            </div>
-
-            {truingMsg&&(
-              <div style={{fontSize:8,color:CYN,background:"rgba(0,212,255,.06)",
-                border:"1px solid rgba(0,212,255,.2)",padding:"8px 10px",lineHeight:1.8}}>
-                {truingMsg}
-              </div>
-            )}
-
-            {/* MV truing */}
-            <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(0,255,65,.08)"}}>
-              <div className="lbl" style={{marginBottom:6}}>TRUING MV — inserisci drop a zero noto</div>
-              <div style={{fontSize:8,color:"rgba(0,255,65,.35)",marginBottom:8,lineHeight:1.6}}>
-                Spara a distanza di zero, misura l'impatto reale vs aspettato.
-                Oppure usa il cronografo per MV diretta.
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <div style={{flex:1}}>
-                  <div className="lbl">MV MISURATA (m/s)</div>
-                  <input type="number" className="vg-in" step={1}
-                    placeholder={String(ammoData?.mv??320)}
-                    value={editingProfile.mvMs??""} 
-                    onChange={e=>setEditingProfile(p=>({...p,mvMs:e.target.value?+e.target.value:null}))}/>
+              <div>
+                <div style={LBL}>CLICK VALUE</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.01} value={ep.clickValue??0.1} onChange={setN("clickValue")}/>
                 </div>
-                {editingProfile.bcValue>0&&(
-                  <div style={{flex:1,textAlign:"center",padding:"8px",
-                    background:"rgba(0,212,255,.04)",border:"1px solid rgba(0,212,255,.15)"}}>
-                    <div className="lbl">BC TRUATO</div>
-                    <div className="orb" style={{fontSize:18,color:CYN}}>{editingProfile.bcValue}</div>
-                    <div style={{fontSize:7,color:"rgba(0,212,255,.4)"}}>G7 salvato</div>
-                  </div>
-                )}
+              </div>
+              <div>
+                <div style={LBL}>MODELLO OTTICA</div>
+                <input style={{...IN,gridColumn:"1/-1"}} type="text" placeholder="es. Discovery XED 6-36x56"
+                  value={ep.scopeName??""} onChange={set("scopeName")}/>
               </div>
             </div>
           </div>
 
+          {/* ── Advanced Settings ── */}
+          <div style={CARD}>
+            <div style={HDR}><span>IMPOSTAZIONI AVANZATE</span></div>
+            {/* Zero offset */}
+            <div style={{...LBL,marginBottom:8}}>OFFSET ZERO</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div>
+                <div style={LBL}>ZERO HEIGHT</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.01} placeholder="0.00"
+                    value={ep.zeroHeightCm??0} onChange={setN("zeroHeightCm")}/>
+                  <span style={INUNIT}>CM</span>
+                </div>
+              </div>
+              <div>
+                <div style={LBL}>ZERO OFFSET</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.01} placeholder="0.00"
+                    value={ep.zeroOffsetCm??0} onChange={setN("zeroOffsetCm")}/>
+                  <span style={INUNIT}>CM</span>
+                </div>
+              </div>
+            </div>
+            {/* Impact preview */}
+            <div style={{background:"rgba(0,0,0,.3)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,
+              padding:12,marginBottom:12,display:"flex",gap:16,alignItems:"center"}}>
+              <div style={{width:90,height:90,position:"relative",flexShrink:0}}>
+                <svg width="90" height="90" viewBox="0 0 90 90">
+                  <circle cx="45" cy="45" r="42" fill="none" stroke="rgba(255,255,255,.15)" strokeWidth="1"/>
+                  <circle cx="45" cy="45" r="28" fill="none" stroke="rgba(255,255,255,.1)" strokeWidth="1" strokeDasharray="4,4"/>
+                  <line x1="45" y1="3" x2="45" y2="87" stroke="rgba(255,255,255,.2)" strokeWidth="1"/>
+                  <line x1="3" y1="45" x2="87" y2="45" stroke="rgba(255,255,255,.2)" strokeWidth="1"/>
+                  {/* punto impatto */}
+                  <circle cx={45+(ep.zeroOffsetCm??0)*6} cy={45-(ep.zeroHeightCm??0)*6}
+                    r="5" fill={RED} stroke="none"/>
+                </svg>
+              </div>
+              <div style={{fontSize:9,color:"rgba(255,255,255,.45)",lineHeight:1.7,fontFamily:"'IBM Plex Mono',monospace"}}>
+                <div>{(ep.zeroHeightCm??0)===0?"Height centered":`H: ${ep.zeroHeightCm>0?"Up":"Down"} ${Math.abs(ep.zeroHeightCm??0).toFixed(2)} CM`}</div>
+                <div>{(ep.zeroOffsetCm??0)===0?"Offset centered":`W: ${ep.zeroOffsetCm>0?"Right":"Left"} ${Math.abs(ep.zeroOffsetCm??0).toFixed(2)} CM`}</div>
+                <div style={{marginTop:4,color:"rgba(255,255,255,.25)"}}>Preview ±5.00 CM</div>
+              </div>
+            </div>
+            {/* SSF */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div>
+                <div style={LBL}>SSF ELEVATION</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} placeholder="1.000"
+                    value={ep.ssfElevation??1.0} onChange={setN("ssfElevation")}/>
+                </div>
+              </div>
+              <div>
+                <div style={LBL}>SSF WINDAGE</div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} placeholder="1.000"
+                    value={ep.ssfWindage??1.0} onChange={setN("ssfWindage")}/>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── MV-Temp Table ── */}
+          <div style={CARD}>
+            <div style={{...HDR,marginBottom:12}}>
+              <span>MV-TEMP TABLE</span>
+              <Toggle val={ep.useMvTempTable}
+                onChange={()=>setEditingProfile(p=>({...p,useMvTempTable:!p.useMvTempTable}))}/>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,
+              marginBottom:8,fontSize:9,color:"rgba(0,212,255,.5)",fontFamily:"'IBM Plex Mono',monospace",
+              letterSpacing:".08em",padding:"0 2px"}}>
+              <div>TEMPERATURA</div><div>VELOCITÀ</div><div/>
+            </div>
+            {(ep.mvTempTable||[]).map(row=>(
+              <div key={row.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,marginBottom:8}}>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={1} value={row.temp}
+                    onChange={e=>setEditingProfile(p=>({...p,mvTempTable:p.mvTempTable.map(r=>r.id===row.id?{...r,temp:+e.target.value}:r)}))}/>
+                  <span style={INUNIT}>°C</span>
+                </div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.1} value={row.mv}
+                    onChange={e=>setEditingProfile(p=>({...p,mvTempTable:p.mvTempTable.map(r=>r.id===row.id?{...r,mv:+e.target.value}:r)}))}/>
+                  <span style={INUNIT}>M/S</span>
+                </div>
+                <button onClick={()=>setEditingProfile(p=>({...p,mvTempTable:p.mvTempTable.filter(r=>r.id!==row.id)}))}
+                  style={{background:"rgba(255,51,68,.1)",border:"1px solid rgba(255,51,68,.25)",borderRadius:4,
+                    color:RED,cursor:"pointer",width:36,minHeight:44,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>
+                  ×
+                </button>
+              </div>
+            ))}
+            <button onClick={()=>setEditingProfile(p=>({...p,mvTempTable:[...(p.mvTempTable||[]),{id:Date.now(),temp:15,mv:p.mvMs||320}]}))}
+              style={{width:"100%",padding:"11px",background:"transparent",
+                border:"1px dashed rgba(0,212,255,.25)",borderRadius:6,color:CYN,
+                fontFamily:"'IBM Plex Mono',monospace",fontSize:11,cursor:"pointer",
+                letterSpacing:".08em",minHeight:44}}>
+              + AGGIUNGI TEMPERATURA / VELOCITÀ
+            </button>
+          </div>
+
+          {/* ── Drop Scale Factor Table ── */}
+          <div style={CARD}>
+            <div style={HDR}><span>DROP SCALE FACTOR TABLE</span></div>
+            {(ep.dropScaleTable||[]).map(row=>(
+              <div key={row.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,marginBottom:8}}>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={25} value={row.dist}
+                    onChange={e=>setEditingProfile(p=>({...p,dropScaleTable:p.dropScaleTable.map(r=>r.id===row.id?{...r,dist:+e.target.value}:r)}))}/>
+                  <span style={INUNIT}>M</span>
+                </div>
+                <div style={INROW}>
+                  <input style={INFIELD} type="number" step={.001} value={row.factor}
+                    onChange={e=>setEditingProfile(p=>({...p,dropScaleTable:p.dropScaleTable.map(r=>r.id===row.id?{...r,factor:+e.target.value}:r)}))}/>
+                </div>
+                <button onClick={()=>setEditingProfile(p=>({...p,dropScaleTable:p.dropScaleTable.filter(r=>r.id!==row.id)}))}
+                  style={{background:"rgba(255,51,68,.1)",border:"1px solid rgba(255,51,68,.25)",borderRadius:4,
+                    color:RED,cursor:"pointer",width:36,minHeight:44,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>
+                  ×
+                </button>
+              </div>
+            ))}
+            {(ep.dropScaleTable||[]).length===0&&(
+              <div style={{textAlign:"center",padding:"16px 0",fontSize:9,color:"rgba(255,255,255,.2)",
+                fontFamily:"'IBM Plex Mono',monospace"}}>Nessun fattore correttivo impostato</div>
+            )}
+            <button onClick={()=>setEditingProfile(p=>({...p,dropScaleTable:[...(p.dropScaleTable||[]),{id:Date.now(),dist:100,factor:1.000}]}))}
+              style={{width:"100%",padding:"11px",background:"transparent",
+                border:"1px dashed rgba(0,212,255,.25)",borderRadius:6,color:CYN,
+                fontFamily:"'IBM Plex Mono',monospace",fontSize:11,cursor:"pointer",
+                letterSpacing:".08em",minHeight:44}}>
+              + AGGIUNGI FATTORE
+            </button>
+          </div>
+
+          {/* ── Note ── */}
+          <div style={CARD}>
+            <div style={HDR}><span>NOTE</span></div>
+            <textarea style={{...IN,resize:"vertical",minHeight:80}}
+              rows={3} placeholder="cariche, condizioni, note gara..."
+              value={ep.notes??""} onChange={set("notes")}/>
+          </div>
+
+          {/* ── Pulsanti ── */}
           <div style={{display:"flex",gap:8,marginBottom:8}}>
             <button className="btn-prim" style={{flex:1,fontSize:11}} onClick={()=>{
               setProfiles(prev=>{
@@ -1854,33 +2355,116 @@ export default function App(){
             )}
           </div>
         </>
-      )}
+        )
+      })()}
 
       {/* ═══ TAB SETUP ═══ */}
-      {mainTab==="setup"&&(
-        <>
-          {/* Munizione */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>MUNIZIONE RAPIDA</div>
-            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
-              {Object.keys(AMMO_CATALOG).map(g=>(
-                <button key={g} className={`pill${ammoGroup===g?" on":""}`}
-                  onClick={()=>{setAmmoGroup(g);setAmmoKey(Object.keys(AMMO_CATALOG[g])[0])}}>
-                  {g}
+      {mainTab==="setup"&&(()=>{
+        // Colori Setup — adattivi al tema corrente
+        const SB = dk ? "rgba(0,212,255,.9)" : "#007AFF"
+        const ST = T.text
+        const SG = T.textDim
+        const SF = dk ? "rgba(0,255,65,.04)" : "#F2F2F7"
+        const SL={fontSize:12,color:SB,fontFamily:"'IBM Plex Mono',monospace",letterSpacing:".05em",marginBottom:4,fontWeight:600}
+        const SC={background:T.card,border:`1px solid ${T.cardBorder}`,borderRadius:dk?4:12,padding:"16px",marginBottom:12,
+          boxShadow:dk?"none":"0 1px 3px rgba(0,0,0,.06)"}
+        const SH={fontFamily:"'IBM Plex Mono',monospace",fontSize:13,color:ST,fontWeight:700,
+          letterSpacing:".08em",marginBottom:14,paddingBottom:10,borderBottom:`1px solid ${T.cardBorder}`}
+        const SI={background:T.inputBg,border:`1px solid ${T.inputBorder}`,borderRadius:dk?4:10,
+          color:T.inputText,fontFamily:"'IBM Plex Mono',monospace",fontSize:14,padding:"11px 14px",
+          width:"100%",boxSizing:"border-box",minHeight:44,outline:"none"}
+        const SR={display:"flex",alignItems:"center",background:T.inputBg,
+          border:`1px solid ${T.inputBorder}`,borderRadius:dk?4:10,overflow:"hidden"}
+        const SRF={...SI,border:"none",background:"transparent",flex:1}
+        const SRU={fontSize:10,color:SG,fontFamily:"'IBM Plex Mono',monospace",
+          padding:"0 12px",alignSelf:"stretch",display:"flex",alignItems:"center",
+          borderLeft:`1px solid ${T.inputBorder}`,background:SF}
+        const SToggle=({val,onChange,label})=>(
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            padding:"12px 0",borderBottom:`1px solid ${T.cardBorder}`}}>
+            <span style={{color:ST,fontSize:14,fontFamily:"'IBM Plex Mono',monospace"}}>{label}</span>
+            <div onClick={onChange} style={{width:51,height:31,borderRadius:16,cursor:"pointer",
+              position:"relative",background:val?(dk?"rgba(0,255,65,.35)":"#34C759"):(dk?"rgba(0,255,65,.08)":"rgba(120,120,128,.2)"),
+              border:`1px solid ${val?(dk?"rgba(0,255,65,.5)":"transparent"):(dk?"rgba(0,255,65,.15)":"transparent")}`,
+              transition:"background .2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:2,left:val?22:2,width:27,height:27,borderRadius:"50%",
+                background:val?(dk?GRN:"#FFF"):(dk?"rgba(0,255,65,.6)":"#FFF"),transition:"left .2s",
+                boxShadow:dk?"none":"0 2px 6px rgba(0,0,0,.25)"}}/>
+            </div>
+          </div>
+        )
+        const SBtn=({active,onClick,children,style={}})=>(
+          <button onClick={onClick} style={{padding:"9px 18px",borderRadius:dk?4:20,cursor:"pointer",
+            border:`2px solid ${active?T.accent:T.pillBorder}`,
+            background:active?T.accent:"transparent",
+            color:active?(dk?"#020c04":"#FFF"):SG,
+            fontSize:13,fontFamily:"'IBM Plex Mono',monospace",fontWeight:active?700:400,...style}}>
+            {children}
+          </button>
+        )
+        return(
+        <div style={{background:T.bg,margin:"-8px -12px",padding:"16px 12px",minHeight:"100%"}}>
+
+          {/* ── Tema ── */}
+          <div style={SC}>
+            <div style={SH}>ASPETTO</div>
+            <div style={{display:"flex",gap:10}}>
+              {[["dark","DARK","#020c04"],["light","LIGHT","#F0F2F5"]].map(([val,label,bg])=>(
+                <button key={val} onClick={()=>setTheme(val)}
+                  style={{flex:1,padding:"16px 8px",borderRadius:dk?4:12,cursor:"pointer",
+                    border:`2px solid ${theme===val?T.accent:T.cardBorder}`,
+                    background:bg,display:"flex",flexDirection:"column",alignItems:"center",gap:8,
+                    outline:"none",transition:"border-color .2s"}}>
+                  {/* Mini preview */}
+                  <div style={{width:52,height:36,borderRadius:6,background:bg,
+                    border:"1px solid rgba(128,128,128,.2)",overflow:"hidden",position:"relative"}}>
+                    <div style={{position:"absolute",top:0,left:0,right:0,height:10,
+                      background:val==="dark"?"#030f05":"#FFFFFF",
+                      borderBottom:`1px solid ${val==="dark"?"rgba(0,255,65,.15)":"rgba(0,0,0,.08)"}`}}/>
+                    <div style={{position:"absolute",top:12,left:4,right:4,height:6,borderRadius:2,
+                      background:val==="dark"?"rgba(0,255,65,.15)":"rgba(0,0,0,.06)"}}/>
+                    <div style={{position:"absolute",top:20,left:4,right:4,height:6,borderRadius:2,
+                      background:val==="dark"?"rgba(0,255,65,.08)":"rgba(0,0,0,.04)"}}/>
+                    <div style={{position:"absolute",bottom:0,left:0,right:0,height:9,
+                      background:val==="dark"?"#020c04":"#FFFFFF",
+                      borderTop:`1px solid ${val==="dark"?"rgba(0,255,65,.1)":"rgba(0,0,0,.08)"}`}}/>
+                    {theme===val&&(
+                      <div style={{position:"absolute",top:2,right:3,width:6,height:6,borderRadius:"50%",
+                        background:val==="dark"?GRN:"#007AFF"}}/>
+                    )}
+                  </div>
+                  <span style={{fontSize:11,fontFamily:"Orbitron,monospace",
+                    color:theme===val?(val==="dark"?GRN:"#007AFF"):(val==="dark"?"rgba(255,255,255,.5)":"rgba(0,0,0,.35)"),
+                    fontWeight:theme===val?700:400,letterSpacing:".1em"}}>
+                    {label}
+                  </span>
                 </button>
               ))}
             </div>
-            <select className="vg-sel" value={ammoKey} onChange={e=>setAmmoKey(e.target.value)}>
+          </div>
+
+          {/* Munizione */}
+          <div style={SC}>
+            <div style={SH}>MUNIZIONE RAPIDA</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+              {Object.keys(AMMO_CATALOG).map(g=>(
+                <SBtn key={g} active={ammoGroup===g}
+                  onClick={()=>{setAmmoGroup(g);setAmmoKey(Object.keys(AMMO_CATALOG[g])[0])}}>
+                  {g}
+                </SBtn>
+              ))}
+            </div>
+            <select style={{...SI,marginBottom:10}} value={ammoKey} onChange={e=>setAmmoKey(e.target.value)}>
               {Object.keys(AMMO_CATALOG[ammoGroup]).map(k=>(
                 <option key={k} value={k}>{k} · BC G7:{AMMO_CATALOG[ammoGroup][k].bc_g7} · {AMMO_CATALOG[ammoGroup][k].mv}m/s</option>
               ))}
             </select>
             {ammoData&&(
-              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5,marginTop:8}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
                 {[["BC G7",ammoData.bc_g7],["MV",ammoData.mv+"m/s"],["PESO",ammoData.wGr+"gr"],["CAL.",ammoData.dMm+"mm"]].map(([l,v])=>(
-                  <div key={l} style={{textAlign:"center",padding:"5px",background:"rgba(0,255,65,.025)",border:"1px solid rgba(0,255,65,.07)",borderRadius:2}}>
-                    <div className="lbl">{l}</div>
-                    <div className="orb" style={{fontSize:11,color:GRN}}>{v}</div>
+                  <div key={l} style={{textAlign:"center",padding:"10px 4px",background:SF,borderRadius:8}}>
+                    <div style={{fontSize:9,color:SB,fontFamily:"'IBM Plex Mono',monospace",marginBottom:4}}>{l}</div>
+                    <div style={{fontSize:13,color:ST,fontFamily:"Orbitron,monospace",fontWeight:700}}>{v}</div>
                   </div>
                 ))}
               </div>
@@ -1888,95 +2472,94 @@ export default function App(){
           </div>
 
           {/* Ottica */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>OTTICA / MONTATURA</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <div style={SC}>
+            <div style={SH}>OTTICA / MONTATURA</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
               <div>
-                <div className="lbl">H OTTICA (cm)</div>
-                <input type="number" className="vg-in" step={.1} value={scopeH} onChange={e=>setScopeH(+e.target.value)}/>
+                <div style={SL}>ALTEZZA LINEA VISIVA</div>
+                <div style={SR}>
+                  <input style={SRF} type="number" step={.1} value={scopeH}
+                    onChange={e=>setScopeH(+e.target.value)}/>
+                  <span style={SRU}>CM</span>
+                </div>
               </div>
               <div>
-                <div className="lbl">ZERO (m)</div>
-                <input type="number" className="vg-in" step={5} value={zeroM} onChange={e=>setZeroM(+e.target.value)}/>
+                <div style={SL}>ZERO</div>
+                <div style={SR}>
+                  <input style={SRF} type="number" step={5} value={zeroM}
+                    onChange={e=>setZeroM(+e.target.value)}/>
+                  <span style={SRU}>M</span>
+                </div>
               </div>
             </div>
           </div>
 
           {/* Sistema unità */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>SISTEMA UNITÀ</div>
-            <div style={{display:"flex",gap:8}}>
-              <button className={`pill${units==="metric"?" on":""}`} style={{flex:1,fontSize:11}}
-                onClick={()=>setUnits("metric")}>🌍 METRICO (m · m/s · °C)</button>
-              <button className={`pill${units==="imp"?" on":""}`} style={{flex:1,fontSize:11}}
-                onClick={()=>setUnits("imp")}>🇺🇸 IMPERIALE (yd · fps · °F)</button>
+          <div style={SC}>
+            <div style={SH}>SISTEMA</div>
+            <div style={{marginBottom:12}}>
+              <div style={{...SH,fontSize:11,marginBottom:8}}>UNITÀ DI MISURA</div>
+              <div style={{display:"flex",gap:8}}>
+                <SBtn active={units==="metric"} onClick={()=>setUnits("metric")} style={{flex:1}}>
+                  METRICO (m · m/s · °C)
+                </SBtn>
+                <SBtn active={units==="imp"} onClick={()=>setUnits("imp")} style={{flex:1}}>
+                  IMPERIALE (yd · fps · °F)
+                </SBtn>
+              </div>
             </div>
-            <div style={{fontSize:7,color:"rgba(0,255,65,.3)",marginTop:8,lineHeight:1.8}}>
-              La fisica interna è sempre in SI (m, m/s, kg). Le unità influenzano solo il display e gli input.
-              MOA e mrad restano invariati.
-            </div>
-          </div>
-
-          {/* MOA/MRAD */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>UNITÀ ANGOLARI</div>
-            <div style={{display:"flex",gap:8}}>
-              <button className={`unit-btn${unit==="MOA"?" on":""}`} style={{flex:1,minHeight:44,fontSize:12}}
-                onClick={()=>setUnit("MOA")}>MOA</button>
-              <button className={`unit-btn${unit==="MRAD"?" on":""}`} style={{flex:1,minHeight:44,fontSize:12}}
-                onClick={()=>setUnit("MRAD")}>MRAD</button>
+            <div>
+              <div style={{...SH,fontSize:11,marginBottom:8}}>UNITÀ ANGOLARI</div>
+              <div style={{display:"flex",gap:8}}>
+                <SBtn active={unit==="MOA"} onClick={()=>setUnit("MOA")} style={{flex:1}}>MOA</SBtn>
+                <SBtn active={unit==="MRAD"} onClick={()=>setUnit("MRAD")} style={{flex:1}}>MRAD</SBtn>
+              </div>
             </div>
           </div>
 
           {/* Audio */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>AUDIO</div>
-            <div className="toggle-wrap" style={{marginBottom:12}} onClick={()=>setAudio(a=>({...a,enabled:!a.enabled}))}>
-              <div className={`toggle-bg${audio.enabled?" on":""}`}><div className="toggle-knob"/></div>
-              <span style={{fontSize:10,color:audio.enabled?GRN:"rgba(0,255,65,.4)"}}>
-                {audio.enabled?"AUDIO ATTIVO":"AUDIO DISATTIVATO"}
-              </span>
-            </div>
+          <div style={SC}>
+            <div style={SH}>AUDIO</div>
+            <SToggle val={audio.enabled} label="Audio attivo"
+              onChange={()=>setAudio(a=>({...a,enabled:!a.enabled}))}/>
             {audio.enabled&&(
-              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <div style={{paddingTop:12,display:"flex",flexDirection:"column",gap:14}}>
                 <div>
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                    <div className="lbl">VOLUME</div>
-                    <span className="orb" style={{fontSize:11,color:GRN}}>{Math.round(audio.volume*100)}%</span>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                    <span style={{...SL,marginBottom:0}}>VOLUME</span>
+                    <span style={{color:SB,fontSize:12,fontFamily:"Orbitron,monospace"}}>{Math.round(audio.volume*100)}%</span>
                   </div>
-                  <input type="range" className="vg-range" min={0} max={1} step={.05} value={audio.volume}
-                    onChange={e=>setAudio(a=>({...a,volume:+e.target.value}))}/>
+                  <input type="range" style={{width:"100%",accentColor:SB}} min={0} max={1} step={.05}
+                    value={audio.volume} onChange={e=>setAudio(a=>({...a,volume:+e.target.value}))}/>
                 </div>
                 <div>
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                    <div className="lbl">FREQUENZA BIP (Hz)</div>
-                    <span className="orb" style={{fontSize:11,color:GRN}}>{audio.beepFreq}Hz</span>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                    <span style={{...SL,marginBottom:0}}>FREQUENZA BIP</span>
+                    <span style={{color:SB,fontSize:12,fontFamily:"Orbitron,monospace"}}>{audio.beepFreq}Hz</span>
                   </div>
-                  <input type="range" className="vg-range" min={220} max={1760} step={110} value={audio.beepFreq}
-                    onChange={e=>setAudio(a=>({...a,beepFreq:+e.target.value}))}/>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:7,color:"rgba(0,255,65,.3)",marginTop:2}}>
-                    <span>220Hz basso</span><span>880Hz medio</span><span>1760Hz alto</span>
-                  </div>
+                  <input type="range" style={{width:"100%",accentColor:SB}} min={220} max={1760} step={110}
+                    value={audio.beepFreq} onChange={e=>setAudio(a=>({...a,beepFreq:+e.target.value}))}/>
                 </div>
                 <div>
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                    <div className="lbl">DURATA BIP</div>
-                    <span className="orb" style={{fontSize:11,color:GRN}}>{Math.round(audio.beepDur*1000)}ms</span>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                    <span style={{...SL,marginBottom:0}}>DURATA BIP</span>
+                    <span style={{color:SB,fontSize:12,fontFamily:"Orbitron,monospace"}}>{Math.round(audio.beepDur*1000)}ms</span>
                   </div>
-                  <input type="range" className="vg-range" min={.05} max={.5} step={.05} value={audio.beepDur}
-                    onChange={e=>setAudio(a=>({...a,beepDur:+e.target.value}))}/>
+                  <input type="range" style={{width:"100%",accentColor:SB}} min={.05} max={.5} step={.05}
+                    value={audio.beepDur} onChange={e=>setAudio(a=>({...a,beepDur:+e.target.value}))}/>
                 </div>
-                <button className="btn-out" style={{fontSize:10}}
-                  onClick={()=>playBeep(audio.beepFreq,audio.beepDur,1)}>
+                <button onClick={()=>playBeep(audio.beepFreq,audio.beepDur,1)}
+                  style={{padding:"11px",borderRadius:10,border:`1px solid ${SB}`,background:"transparent",
+                    color:SB,fontFamily:"'IBM Plex Mono',monospace",fontSize:13,cursor:"pointer",minHeight:44}}>
                   ▶ TEST BIP
                 </button>
               </div>
             )}
           </div>
 
-          {/* Preset */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>PRESET RAPIDI</div>
+          {/* Preset rapidi */}
+          <div style={SC}>
+            <div style={SH}>PRESET RAPIDI</div>
             {[
               {name:"Bergara B14 · XED · .22LR",ammo:".22LR Lapua SLR",grp:"RIMFIRE",h:6.5,z:50},
               {name:"Discovery XED · SK LR",      ammo:".22LR SK LR Match",grp:"RIMFIRE",h:6.5,z:50},
@@ -1984,43 +2567,58 @@ export default function App(){
               {name:".308 Win Match",               ammo:".308 Win 175gr SMK",grp:"CF PRS",h:4.0,z:100},
               {name:".338 LM ELR",                  ammo:".338 LM 300gr Lapua",grp:"MAGNUM",h:5.5,z:100},
             ].map(p=>(
-              <button key={p.name} className="btn-out" style={{textAlign:"left",padding:"10px",width:"100%",marginBottom:6,borderRadius:2}}
-                onClick={()=>{setAmmoGroup(p.grp);setAmmoKey(p.ammo);setScopeH(p.h);setZeroM(p.z)}}>
-                <div style={{fontSize:10,color:GRN}}>{p.name}</div>
-                <div style={{fontSize:7,color:"rgba(0,255,65,.35)",marginTop:2}}>{p.ammo} · h={p.h}cm · zero {p.z}m</div>
+              <button key={p.name} onClick={()=>{setAmmoGroup(p.grp);setAmmoKey(p.ammo);setScopeH(p.h);setZeroM(p.z)}}
+                style={{width:"100%",textAlign:"left",padding:"12px 14px",marginBottom:6,
+                  background:SF,border:"none",borderRadius:10,cursor:"pointer",minHeight:44}}>
+                <div style={{fontSize:13,color:ST,fontFamily:"'IBM Plex Mono',monospace",fontWeight:600}}>{p.name}</div>
+                <div style={{fontSize:10,color:SG,marginTop:3,fontFamily:"'IBM Plex Mono',monospace"}}>
+                  {p.ammo} · h={p.h}cm · zero {p.z}m
+                </div>
               </button>
             ))}
           </div>
 
-          {/* Info */}
-          <div className="card">
-            <div className="lbl" style={{marginBottom:6}}>COMANDI VOCALI "Vega + ..."</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:2,fontSize:8,lineHeight:2.1}}>
-              {[["stage [n]","carica stage"],["prossimo","avanza target"],["fuoco","registra colpo"],
-                ["alzo","legge MOA corrente"],["distanza [n]","imposta dist"],["millirad/MOA","cambia unità"],
-                ["timer [n]","avvia timer"],["stop","ferma timer"]].map(([c,d])=>(
-                <div key={c} style={{display:"flex",gap:4}}>
-                  <span style={{color:GRN,fontFamily:"Orbitron,monospace",fontSize:7}}>{c}</span>
-                  <span style={{color:"rgba(0,255,65,.35)",fontSize:7}}>→ {d}</span>
+          {/* Comandi vocali */}
+          <div style={SC}>
+            <div style={SH}>COMANDI VOCALI</div>
+            <div style={{fontSize:11,color:SG,fontFamily:"'IBM Plex Mono',monospace",marginBottom:10}}>
+              Dì "Vega" + comando, oppure parole rapide durante stage attivo
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:0}}>
+              {[["stage [N]","carica stage N dalla gara"],["go / inizia","avvia timer stage"],
+                ["next / avanti","avanza bersaglio/colpo"],["colpo / fuoco","registra colpo"],
+                ["alzo","legge alzo corrente"],["distanza [N]","imposta distanza"],
+                ["millirad / MOA","cambia unità angolari"],["timer [N]","avvia timer"],
+                ["stop","ferma timer"]].map(([c,d])=>(
+                <div key={c} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",
+                  borderBottom:`1px solid ${SF}`}}>
+                  <span style={{color:SB,fontFamily:"'IBM Plex Mono',monospace",fontSize:12,fontWeight:700}}>{c}</span>
+                  <span style={{color:SG,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",textAlign:"right"}}>{d}</span>
                 </div>
               ))}
             </div>
           </div>
-        </>
-      )}
+
+          {/* Info app */}
+          <div style={{textAlign:"center",padding:"16px 0",color:SG,fontSize:10,
+            fontFamily:"'IBM Plex Mono',monospace"}}>
+            V·E·G·A v4 · Shooting Labs · Ballistics Engine G7/G1
+          </div>
+        </div>
+        )
+      })()}
     </div>
 
     {/* ═══ STATUS BAR ═══ */}
-    <div style={{padding:"2px 12px",background:"rgba(2,12,4,.98)",
-      borderTop:"1px solid rgba(0,255,65,.07)",display:"flex",
+    <div style={{padding:"2px 12px",background:T.statusBg,
+      borderTop:`1px solid ${T.navBorder}`,display:"flex",
       justifyContent:"space-between",alignItems:"center",flexShrink:0,fontSize:7}}>
-      <span style={{color:"rgba(0,255,65,.2)"}}>V·E·G·A v4</span>
-      <span className="orb" style={{color:GRN}}>
+      <span style={{color:T.textDim}}>V·E·G·A v4</span>
+      <span className="orb" style={{color:dk?GRN:"#007AFF"}}>
         {ammoKey.split(" ").slice(0,2).join(" ")} · {dist}m → {sol?`${signU(sol.dropMoa)} ${unitLbl}`:"—"}
       </span>
-      <span style={{color:"rgba(0,255,65,.25)",display:"flex",gap:5}}>
-        {bleConnected&&<span style={{color:CYN}}>◉CAL</span>}
-        {kestrelConnected&&<span style={{color:CYN}}>◉KST</span>}
+      <span style={{color:T.textDim,display:"flex",gap:5}}>
+        {bleConnected&&<span style={{color:CYN}}>◉BLE</span>}
         {stageActive&&<span style={{color:AMB}}>S{tgtIdx+1}</span>}
         {shotDetect&&<span style={{color:RED}}>🎙</span>}
         {units==="imp"&&<span>IMP</span>}
