@@ -1211,16 +1211,14 @@ export default function App(){
     wakeLockRef.current?.release()
   },[])
 
-  // ── Derived ──
-  const ammoData   = FLAT[ammoKey]
-  const vdotColor  = voiceState==="waiting"?AMB:voiceState==="speaking"?CYN:grna(.4)
-
   // ══════════════════════════════════════════════════════════════
-  // THEME
+  // THEME — deve stare PRIMA di qualsiasi uso di dk/grna
   // ══════════════════════════════════════════════════════════════
   const dk = theme === "dark"
   _GRN = dk ? GRN : "#1C1C1E"
   _dk = dk
+  // Helper: green-alpha adattato al tema (light mode → grigio scuro)
+  const grna=(a)=>dk?`rgba(0,255,65,${a})`:`rgba(28,28,30,${Math.min(+a*1.5,0.95)})`
   const T = {
     bg:          dk ? "#020c04"              : "#F0F2F5",
     card:        dk ? "rgba(0,255,65,.025)"  : "#FFFFFF",
@@ -1249,8 +1247,9 @@ export default function App(){
   }
 
   const timerColor = timerLeft!==null?(timerLeft<=10?RED:timerLeft<=30?AMB:T.grn):T.grn
-  // Helper: green-alpha adattato al tema (light mode → grigio scuro)
-  const grna=(a)=>dk?`rgba(0,255,65,${a})`:`rgba(28,28,30,${Math.min(+a*1.5,0.95)})`
+  // ── Derived ──
+  const ammoData   = FLAT[ammoKey]
+  const vdotColor  = voiceState==="waiting"?AMB:voiceState==="speaking"?CYN:grna(.4)
 
 
   // ══════════════════════════════════════════════════════════════
