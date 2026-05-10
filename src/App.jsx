@@ -624,7 +624,7 @@ export default function App(){
   const goHome = useCallback(()=>{setMainTab("home");setActivePanel(null)},[])
 
   // ── Tema ──
-  const [theme, setTheme] = useState(()=>loadSettings().theme??"dark") // "dark" | "light"
+  const [theme, setTheme] = useState("dark") // "dark" | "light" — default always dark
 
   // ── Unità ──
   const [units, setUnits] = useState(()=>loadSettings().units??"metric") // "metric" | "imp"
