@@ -407,6 +407,58 @@ function makeBeep(freq, dur, vol){
 }
 
 // ═══════════════════════════════════════════════════════════════
+// NUM INPUT — gestisce: select-on-focus, virgola→punto, no zero iniziale
+// ═══════════════════════════════════════════════════════════════
+function NumInput({value, onChange, onBlur, className, style, placeholder, min, max, step, ...rest}){
+  const [local, setLocal] = React.useState(value!=null?String(value):"")
+  // Sincronizza dall'esterno solo se l'utente non sta scrivendo
+  const focusedRef = React.useRef(false)
+  React.useEffect(()=>{
+    if(!focusedRef.current) setLocal(value!=null?String(value):"")
+  },[value])
+  const handleFocus = (e)=>{
+    focusedRef.current = true
+    // Seleziona tutto → il primo tasto sostituisce il valore (addio zero iniziale)
+    setTimeout(()=>e.target.select(), 0)
+  }
+  const handleChange = (e)=>{
+    let v = e.target.value
+      .replace(/,/g, ".")        // virgola → punto
+      .replace(/[^0-9.\-]/g, "") // solo cifre, punto, meno
+      .replace(/(\..*)\./g, "$1") // un solo punto decimale
+    setLocal(v)
+    const n = parseFloat(v)
+    if(!isNaN(n)) onChange?.({...e, target:{...e.target, value:n}})
+  }
+  const handleBlur = (e)=>{
+    focusedRef.current = false
+    const n = parseFloat(local)
+    if(isNaN(n)){
+      // Ripristina valore precedente se non valido
+      setLocal(value!=null?String(value):"")
+    } else {
+      setLocal(String(n))
+      onChange?.({...e, target:{...e.target, value:n}})
+    }
+    onBlur?.(e)
+  }
+  return(
+    <input
+      {...rest}
+      type="text"
+      inputMode="decimal"
+      className={className}
+      style={style}
+      placeholder={placeholder}
+      value={local}
+      onFocus={handleFocus}
+      onChange={handleChange}
+      onBlur={handleBlur}
+    />
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SUB-COMPONENTI
 // ═══════════════════════════════════════════════════════════════
 function WindRose({angle, setAngle}){
@@ -482,7 +534,7 @@ function MVPanel({mvList, onAdd, onRemove, onApply, appliedMv}){
   return(
     <div>
       <div style={{display:"flex",gap:6,marginBottom:8}}>
-        <input type="number" className="vg-in" style={{flex:1}} placeholder="es. 318 m/s" value={inp}
+        <NumInput className="vg-in" style={{flex:1}} placeholder="es. 318 m/s" value={inp}
           onChange={e=>setInp(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAdd()}/>
         <button className="btn-prim" style={{fontSize:9,padding:"6px 12px"}} onClick={handleAdd}>+</button>
       </div>
@@ -1654,7 +1706,7 @@ export default function App(){
           <div className="card">
             <div className="lbl">DISTANZA</div>
             <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-              <input type="number" className="vg-in" value={dist} min={10} max={2500}
+              <NumInput className="vg-in" value={dist} min={10} max={2500}
                 onChange={e=>setDist(+e.target.value)}
                 style={{width:100,fontSize:24,textAlign:"center",fontFamily:"Orbitron,monospace",fontWeight:700}}/>
               <span style={{fontSize:12,color:grna(.4)}}>{U.distL(units)}</span>
@@ -1779,7 +1831,7 @@ export default function App(){
               ].map(([l,k,v,step])=>(
                 <div key={k}>
                   <div className="lbl">{l}</div>
-                  <input type="number" className="vg-in" step={step} value={v}
+                  <NumInput className="vg-in" step={step} value={v}
                     onChange={e=>{
                       const raw=+e.target.value
                       if(k==="temp")setWx(w=>({...w,temp:U.toC(raw,units)}))
@@ -1988,7 +2040,7 @@ export default function App(){
               marginBottom:12,marginTop:8,
             }}>{fmtTime(timerLeft)}</div>
             <div style={{display:"flex",gap:8,justifyContent:"center",alignItems:"center",marginBottom:12}}>
-              <input type="number" className="vg-in" style={{width:90,textAlign:"center",fontFamily:"Orbitron,monospace",fontSize:20}}
+              <NumInput className="vg-in" style={{width:90,textAlign:"center",fontFamily:"Orbitron,monospace",fontSize:20}}
                 value={timerSecs} onChange={e=>setTimerSecs(+e.target.value)} min={10} max={600}/>
               <span style={{fontSize:10,color:grna(.4)}}>sec</span>
             </div>
@@ -2014,7 +2066,7 @@ export default function App(){
               </div>
             ))}
             <div style={{display:"flex",gap:8,marginTop:10}}>
-              <input type="number" className="vg-in" style={{flex:1}} placeholder="secondi (es. 45)"
+              <NumInput className="vg-in" style={{flex:1}} placeholder="secondi (es. 45)"
                 value={newAlertSecs} onChange={e=>setNewAlertSecs(e.target.value)}/>
               <button className="btn-prim" style={{fontSize:9,padding:"8px 14px"}}
                 onClick={()=>{
@@ -2313,7 +2365,7 @@ export default function App(){
               <div>
                 <div style={LBL}>DIAMETRO</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} placeholder="0.000"
+                  <NumInput style={INFIELD} step={.001} placeholder="0.000"
                     value={ep.bulletDiaMm||""} onChange={setN("bulletDiaMm")}/>
                   <span style={INUNIT}>CM</span>
                 </div>
@@ -2321,7 +2373,7 @@ export default function App(){
               <div>
                 <div style={LBL}>PESO</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.5} placeholder="0.0"
+                  <NumInput style={INFIELD} step={.5} placeholder="0.0"
                     value={ep.bulletWeightGr||""} onChange={setN("bulletWeightGr")}/>
                   <span style={INUNIT}>GR</span>
                 </div>
@@ -2329,7 +2381,7 @@ export default function App(){
               <div>
                 <div style={LBL}>BC {ep.bcModel||"G1"}</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} placeholder="0.000"
+                  <NumInput style={INFIELD} step={.001} placeholder="0.000"
                     value={ep.bcValue||""} onChange={setN("bcValue")}/>
                   <span style={INUNIT}>{ep.bcModel||"G1"}</span>
                 </div>
@@ -2337,14 +2389,14 @@ export default function App(){
               <div>
                 <div style={LBL}>DRAG FACTOR</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} placeholder="1.000"
+                  <NumInput style={INFIELD} step={.001} placeholder="1.000"
                     value={ep.customDragFactor??1.0} onChange={setN("customDragFactor")}/>
                 </div>
               </div>
               <div style={{gridColumn:"1/-1"}}>
                 <div style={LBL}>LUNGHEZZA</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} placeholder="0.000"
+                  <NumInput style={INFIELD} step={.001} placeholder="0.000"
                     value={ep.bulletLengthMm||""} onChange={setN("bulletLengthMm")}/>
                   <span style={INUNIT}>CM</span>
                 </div>
@@ -2375,8 +2427,8 @@ export default function App(){
               <div>
                 <div style={LBL}>VELOCITÀ BOCCA</div>
                 <div style={INROW}>
-                  <input style={{...INFIELD,color:ep.useMvTempTable?"rgba(255,255,255,.3)":undefined}}
-                    type="number" step={.1} placeholder="326.1"
+                  <NumInput style={{...INFIELD,color:ep.useMvTempTable?"rgba(255,255,255,.3)":undefined}}
+                    step={.1} placeholder="326.1"
                     value={ep.mvMs??""} onChange={setNOpt("mvMs")}/>
                   <span style={INUNIT}>M/S</span>
                 </div>
@@ -2384,7 +2436,7 @@ export default function App(){
               <div>
                 <div style={LBL}>ZERO</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={5} placeholder="50"
+                  <NumInput style={INFIELD} step={5} placeholder="50"
                     value={ep.zeroM||""} onChange={setN("zeroM")}/>
                   <span style={INUNIT}>M</span>
                 </div>
@@ -2392,7 +2444,7 @@ export default function App(){
               <div>
                 <div style={LBL}>ALTEZZA LINEA VISIVA</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.1} placeholder="6.50"
+                  <NumInput style={INFIELD} step={.1} placeholder="6.50"
                     value={ep.scopeHeightCm||""} onChange={setN("scopeHeightCm")}/>
                   <span style={INUNIT}>CM</span>
                 </div>
@@ -2400,7 +2452,7 @@ export default function App(){
               <div>
                 <div style={LBL}>TWIST RATE</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.01} placeholder="40.64"
+                  <NumInput style={INFIELD} step={.01} placeholder="40.64"
                     value={ep.twistCm||""} onChange={setN("twistCm")}/>
                   <span style={INUNIT}>CM</span>
                 </div>
@@ -2461,7 +2513,7 @@ export default function App(){
               <div>
                 <div style={LBL}>CLICK VALUE</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.01} value={ep.clickValue??0.1} onChange={setN("clickValue")}/>
+                  <NumInput style={INFIELD} step={.01} value={ep.clickValue??0.1} onChange={setN("clickValue")}/>
                 </div>
               </div>
               <div>
@@ -2481,7 +2533,7 @@ export default function App(){
               <div>
                 <div style={LBL}>ZERO HEIGHT</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.01} placeholder="0.00"
+                  <NumInput style={INFIELD} step={.01} placeholder="0.00"
                     value={ep.zeroHeightCm??0} onChange={setN("zeroHeightCm")}/>
                   <span style={INUNIT}>CM</span>
                 </div>
@@ -2489,7 +2541,7 @@ export default function App(){
               <div>
                 <div style={LBL}>ZERO OFFSET</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.01} placeholder="0.00"
+                  <NumInput style={INFIELD} step={.01} placeholder="0.00"
                     value={ep.zeroOffsetCm??0} onChange={setN("zeroOffsetCm")}/>
                   <span style={INUNIT}>CM</span>
                 </div>
@@ -2520,14 +2572,14 @@ export default function App(){
               <div>
                 <div style={LBL}>SSF ELEVATION</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} placeholder="1.000"
+                  <NumInput style={INFIELD} step={.001} placeholder="1.000"
                     value={ep.ssfElevation??1.0} onChange={setN("ssfElevation")}/>
                 </div>
               </div>
               <div>
                 <div style={LBL}>SSF WINDAGE</div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} placeholder="1.000"
+                  <NumInput style={INFIELD} step={.001} placeholder="1.000"
                     value={ep.ssfWindage??1.0} onChange={setN("ssfWindage")}/>
                 </div>
               </div>
@@ -2549,12 +2601,12 @@ export default function App(){
             {(ep.mvTempTable||[]).map(row=>(
               <div key={row.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,marginBottom:8}}>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={1} value={row.temp}
+                  <NumInput style={INFIELD} step={1} value={row.temp}
                     onChange={e=>setEditingProfile(p=>({...p,mvTempTable:p.mvTempTable.map(r=>r.id===row.id?{...r,temp:+e.target.value}:r)}))}/>
                   <span style={INUNIT}>°C</span>
                 </div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.1} value={row.mv}
+                  <NumInput style={INFIELD} step={.1} value={row.mv}
                     onChange={e=>setEditingProfile(p=>({...p,mvTempTable:p.mvTempTable.map(r=>r.id===row.id?{...r,mv:+e.target.value}:r)}))}/>
                   <span style={INUNIT}>M/S</span>
                 </div>
@@ -2580,12 +2632,12 @@ export default function App(){
             {(ep.dropScaleTable||[]).map(row=>(
               <div key={row.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,marginBottom:8}}>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={25} value={row.dist}
+                  <NumInput style={INFIELD} step={25} value={row.dist}
                     onChange={e=>setEditingProfile(p=>({...p,dropScaleTable:p.dropScaleTable.map(r=>r.id===row.id?{...r,dist:+e.target.value}:r)}))}/>
                   <span style={INUNIT}>M</span>
                 </div>
                 <div style={INROW}>
-                  <input style={INFIELD} type="number" step={.001} value={row.factor}
+                  <NumInput style={INFIELD} step={.001} value={row.factor}
                     onChange={e=>setEditingProfile(p=>({...p,dropScaleTable:p.dropScaleTable.map(r=>r.id===row.id?{...r,factor:+e.target.value}:r)}))}/>
                 </div>
                 <button onClick={()=>setEditingProfile(p=>({...p,dropScaleTable:p.dropScaleTable.filter(r=>r.id!==row.id)}))}
@@ -2623,7 +2675,7 @@ export default function App(){
               <div style={{marginBottom:10,padding:"8px 10px",background:"rgba(204,68,255,.06)",
                 border:"1px solid rgba(204,68,255,.2)",borderRadius:6}}>
                 <div style={{fontSize:8,color:"rgba(204,68,255,.5)",marginBottom:4}}>DRAG FACTOR</div>
-                <input type="number" step="0.001" min="0.5" max="2.0" style={{...IN,fontSize:14}}
+                <NumInput step="0.001" min="0.5" max="2.0" style={{...IN,fontSize:14}}
                   value={ep.customDragFactor??1.0}
                   onChange={e=>setEditingProfile(p=>({...p,customDragFactor:+e.target.value}))}/>
                 <div style={{fontSize:7,color:"rgba(204,68,255,.4)",marginTop:4}}>
@@ -2645,10 +2697,10 @@ export default function App(){
             )}
             {(ep.truingPoints||[]).map(row=>(
               <div key={row.id} style={{display:"grid",gridTemplateColumns:"52px 1fr 1fr 28px",gap:4,marginBottom:6}}>
-                <input type="number" style={{...IN,textAlign:"center"}} placeholder="m"
+                <NumInput style={{...IN,textAlign:"center"}} placeholder="m"
                   value={row.dist||""}
                   onChange={e=>setEditingProfile(p=>({...p,truingPoints:p.truingPoints.map(r=>r.id===row.id?{...r,dist:+e.target.value}:r)}))}/>
-                <input type="number" step="0.001" style={{...IN,textAlign:"center"}} placeholder={unit==="MOA"?"MOA":"mrad"}
+                <NumInput step="0.001" style={{...IN,textAlign:"center"}} placeholder={unit==="MOA"?"MOA":"mrad"}
                   value={row.measuredMrad??""}
                   onChange={e=>setEditingProfile(p=>({...p,truingPoints:p.truingPoints.map(r=>r.id===row.id?{...r,measuredMrad:+e.target.value}:r)}))}/>
                 <input type="date" style={{...IN,fontSize:10}}
@@ -2823,7 +2875,7 @@ export default function App(){
               <div>
                 <div style={SL}>ALTEZZA LINEA VISIVA</div>
                 <div style={SR}>
-                  <input style={SRF} type="number" step={.1} value={scopeH}
+                  <NumInput style={SRF} step={.1} value={scopeH}
                     onChange={e=>setScopeH(+e.target.value)}/>
                   <span style={SRU}>CM</span>
                 </div>
@@ -2831,7 +2883,7 @@ export default function App(){
               <div>
                 <div style={SL}>ZERO</div>
                 <div style={SR}>
-                  <input style={SRF} type="number" step={5} value={zeroM}
+                  <NumInput style={SRF} step={5} value={zeroM}
                     onChange={e=>setZeroM(+e.target.value)}/>
                   <span style={SRU}>M</span>
                 </div>
