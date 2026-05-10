@@ -410,10 +410,9 @@ function makeBeep(freq, dur, vol){
 // NUM INPUT — gestisce: select-on-focus, virgola→punto, no zero iniziale
 // ═══════════════════════════════════════════════════════════════
 function NumInput({value, onChange, onBlur, className, style, placeholder, min, max, step, ...rest}){
-  const [local, setLocal] = React.useState(value!=null?String(value):"")
-  // Sincronizza dall'esterno solo se l'utente non sta scrivendo
-  const focusedRef = React.useRef(false)
-  React.useEffect(()=>{
+  const [local, setLocal] = useState(value!=null?String(value):"")
+  const focusedRef = useRef(false)
+  useEffect(()=>{
     if(!focusedRef.current) setLocal(value!=null?String(value):"")
   },[value])
   const handleFocus = (e)=>{
