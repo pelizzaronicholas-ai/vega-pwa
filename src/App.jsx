@@ -735,6 +735,8 @@ export default function App(){
 
   // ── Stage ──
   const [stages,        setStages]        = useState(STAGES_BUILTIN)
+  const stagesRef = useRef(STAGES_BUILTIN)
+  useEffect(()=>{stagesRef.current=stages},[stages])
   const [stageActive,   setStageActive]   = useState(false)
   const [stagePending,  setStagePending]  = useState(false) // caricato, in attesa di "go"
   const [currentStage,  setCurrentStage]  = useState(null)
@@ -1229,18 +1231,26 @@ export default function App(){
         if(stageActiveRef.current && DIRECT_SHOT.test(tl)){
           fireCmd("shot",()=>{setVoiceFeed("◉ COLPO"); onShotFiredRef.current?.()}); return
         }
-        if(garaRef.current){
+        {
           const sm=tl.match(DIRECT_STAGE)
           if(sm){
             const raw=sm[1]; const n=IT_NUM[raw]??+raw
-            const g=garaRef.current
-            const target=g.stages.find(s=>s.stageNum===n)||(g.stages[n-1]??null)
-            if(target){
-              setVoiceFeed(`STAGE ${n}`)
-              const ng={...g,currentIdx:g.stages.indexOf(target)}
-              garaRef.current=ng; setGara(ng)
-              loadStageRef.current?.(target)
-            }else speak(`Stage ${n} non trovato`,true)
+            if(garaRef.current){
+              const g=garaRef.current
+              const target=g.stages.find(s=>s.stageNum===n)||(g.stages[n-1]??null)
+              if(target){
+                setVoiceFeed(`STAGE ${n}`)
+                const ng={...g,currentIdx:g.stages.indexOf(target)}
+                garaRef.current=ng; setGara(ng)
+                loadStageRef.current?.(target)
+              }else speak(`Stage ${n} non trovato`,true)
+            } else {
+              // senza gara: cerca negli stages importati
+              const allStages=stagesRef.current||[]
+              const target=allStages.find(s=>s.stageNum===n)||allStages[n-1]||null
+              if(target){setVoiceFeed(`STAGE ${n}`);loadStageRef.current?.(target)}
+              else speak(`Stage ${n} non trovato`,true)
+            }
             return
           }
         }
@@ -1261,12 +1271,14 @@ export default function App(){
       errored=true
       setVoiceFeed("Mic: "+e.error)
     }
+    let stopped=false
     rec.onend=()=>{
+      if(stopped)return
       scheduleRestart(errored?600:120)
       errored=false
     }
     try{rec.start();setVoiceState("idle")}catch{setVoiceFeed("Mic N/D")}
-    return()=>{clearTimeout(restartTimer);try{rec.stop()}catch{}}
+    return()=>{stopped=true;clearTimeout(restartTimer);try{rec.stop()}catch{}}
   },[handleVoiceCommand,speak,voiceKey])
 
   useEffect(()=>()=>{
@@ -1828,20 +1840,46 @@ export default function App(){
               ))}
             </div>
           </div>
-          <div className="card">
-            <div className="lbl" style={{marginBottom:8}}>CALYPSO BLE</div>
-            {!bleConnected?(
-              <button className="btn-prim" style={{width:"100%"}} onClick={connectCalypso}>◉ CONNETTI CALYPSO</button>
-            ):(
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div>
-                  <div style={{fontSize:10,color:T.grn}}>◉ {bleName}</div>
-                  <div style={{fontSize:7,color:grna(.4)}}>Dati live</div>
-                </div>
-                <button className="btn-out red" style={{fontSize:9,padding:"6px 10px"}} onClick={disconnectCalypso}>DISC.</button>
+          <div className="card" style={{textAlign:"center"}}>
+            <div className="lbl" style={{marginBottom:12}}>CALYPSO BLE</div>
+            {/* Immagine/icona circolare con bordo stato */}
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
+              <div
+                onClick={bleConnected?disconnectCalypso:connectCalypso}
+                style={{
+                  width:100,height:100,borderRadius:"50%",
+                  border:`3px solid ${bleConnected?CYN:RED}`,
+                  boxShadow:`0 0 ${bleConnected?"18px "+CYN+"88":"12px "+RED+"66"}`,
+                  display:"flex",alignItems:"center",justifyContent:"center",
+                  cursor:"pointer",transition:"all .3s",
+                  background:bleConnected?"rgba(0,212,255,.08)":"rgba(255,51,68,.06)",
+                  flexShrink:0,
+                }}>
+                {/* SVG icona anemometro/vento Calypso */}
+                <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
+                  <circle cx="26" cy="26" r="4" fill={bleConnected?CYN:RED}/>
+                  {/* palette vento */}
+                  <path d="M26 22 C26 14 32 10 36 14 C40 18 36 22 26 22Z" fill={bleConnected?CYN+"99":RED+"88"}/>
+                  <path d="M30 26 C38 26 42 32 38 36 C34 40 30 36 30 26Z" fill={bleConnected?CYN+"99":RED+"88"}/>
+                  <path d="M26 30 C26 38 20 42 16 38 C12 34 16 30 26 30Z" fill={bleConnected?CYN+"66":RED+"66"}/>
+                  <path d="M22 26 C14 26 10 20 14 16 C18 12 22 16 22 26Z" fill={bleConnected?CYN+"66":RED+"66"}/>
+                  <circle cx="26" cy="26" r="3" fill={bleConnected?"#020c04":"#0a0204"}/>
+                  {bleConnected&&<circle cx="26" cy="26" r="1.5" fill={CYN}/>}
+                </svg>
               </div>
-            )}
-            {bleError&&<div style={{fontSize:8,color:AMB,marginTop:8}}>{bleError}</div>}
+              <div>
+                <div style={{fontSize:bleConnected?10:9,color:bleConnected?CYN:RED,fontFamily:"'IBM Plex Mono',monospace",
+                  animation:bleConnected?"bleBlip 2s infinite":"none"}}>
+                  {bleConnected?`◉ ${bleName||"Calypso"}  — LIVE`:"○ NON CONNESSO"}
+                </div>
+                {bleConnected&&<div style={{fontSize:7,color:"rgba(0,212,255,.5)",marginTop:2}}>tocca per disconnettere</div>}
+              </div>
+              {!bleConnected&&(
+                <button className="btn-prim" style={{fontSize:11,padding:"12px 28px",letterSpacing:".15em"}}
+                  onClick={connectCalypso}>CONNETTI</button>
+              )}
+            </div>
+            {bleError&&<div style={{fontSize:8,color:AMB,marginTop:10}}>{bleError}</div>}
           </div>
           <div className="card">
             <div className="lbl" style={{marginBottom:8}}>ATMOSFERA</div>
