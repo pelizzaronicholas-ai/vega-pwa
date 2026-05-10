@@ -2301,7 +2301,7 @@ export default function App(){
           fontFamily:"Orbitron,monospace",fontSize:11,color:"#e8f0e8",letterSpacing:".1em",
           paddingBottom:8,marginBottom:10,borderBottom:"1px solid rgba(255,255,255,.07)"}
         const IN={background:"rgba(0,0,0,.35)",border:"1px solid rgba(0,212,255,.18)",borderRadius:4,
-          color:"#e8f0e8",fontFamily:"'IBM Plex Mono',monospace",fontSize:13,padding:"10px 12px",
+          color:dk?GRN:"#e8f0e8",fontFamily:"'IBM Plex Mono',monospace",fontSize:13,padding:"10px 12px",
           width:"100%",boxSizing:"border-box",minHeight:44}
         const UNIT={fontSize:9,color:"rgba(0,212,255,.6)",fontFamily:"'IBM Plex Mono',monospace",
           marginLeft:4,letterSpacing:".1em"}
@@ -2426,7 +2426,7 @@ export default function App(){
               <div>
                 <div style={LBL}>VELOCITÀ BOCCA</div>
                 <div style={INROW}>
-                  <NumInput style={{...INFIELD,color:ep.useMvTempTable?"rgba(255,255,255,.3)":undefined}}
+                  <NumInput style={ep.useMvTempTable?{...INFIELD,color:"rgba(255,255,255,.3)"}:INFIELD}
                     step={.1} placeholder="326.1"
                     value={ep.mvMs??""} onChange={setNOpt("mvMs")}/>
                   <span style={INUNIT}>M/S</span>
