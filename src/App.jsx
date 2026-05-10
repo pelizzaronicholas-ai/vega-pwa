@@ -700,12 +700,16 @@ export default function App(){
   // ── TTS ──
   const speak = useCallback((text, priority=false)=>{
     if(!window.speechSynthesis)return
-    if(priority)speechSynthesis.cancel()
+    if(priority&&speechSynthesis.speaking)speechSynthesis.cancel()
+    // iOS: ripristina synthesis se messa in pausa dal sistema
+    if(speechSynthesis.paused)speechSynthesis.resume()
     const u=new SpeechSynthesisUtterance(text)
-    u.lang="it-IT"; u.rate=1.05; u.pitch=0.88; u.volume=1
+    u.lang="it-IT"; u.rate=1.15; u.pitch=1.0; u.volume=1
     u.onstart=()=>setVoiceState("speaking")
     u.onend=()=>setVoiceState(wakePendRef.current?"waiting":"idle")
-    speechSynthesis.speak(u)
+    // iOS workaround: tiny delay evita artefatti dopo cancel
+    const delay=(priority&&speechSynthesis.speaking)?80:0
+    setTimeout(()=>speechSynthesis.speak(u),delay)
   },[])
 
   // ── Stage logic ──
@@ -1061,13 +1065,21 @@ export default function App(){
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition
     if(!SR){setVoiceFeed("Voce: usa Chrome/Edge");return}
     const rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang="it-IT"; recRef.current=rec
-    // Parole chiave dirette (no wake word) attive durante stage o gara
-    const DIRECT_NEXT  = /^\s*(next|avanti)\s*$/i
-    const DIRECT_GO    = /^\s*(go|vai|inizia|start|pronti|fuoco)\s*$/i
-    const DIRECT_SHOT  = /^\s*(colpo|sparo)\s*$/i
+    // Regex permissivi — permettono punteggiatura iOS e parole extra brevi
+    const DIRECT_NEXT  = /\b(next|avanti)\b/i
+    const DIRECT_GO    = /\b(go|vai|inizia|start|pronti|fuoco)\b/i
+    const DIRECT_SHOT  = /\b(colpo|sparo)\b/i
     // "stage uno/1" ... "stage dieci/10" — numeri in lettere italiane
     const IT_NUM={'uno':1,'due':2,'tre':3,'quattro':4,'cinque':5,'sei':6,'sette':7,'otto':8,'nove':9,'dieci':10}
     const DIRECT_STAGE = /\bstage\s+(\d+|uno|due|tre|quattro|cinque|sei|sette|otto|nove|dieci)\b/i
+    // Deduplication: evita doppio trigger interim+final
+    let lastCmd=""; let lastCmdTs=0
+
+    const fireCmd=(cmd, fn)=>{
+      const now=Date.now()
+      if(cmd===lastCmd&&now-lastCmdTs<1500)return // già eseguito
+      lastCmd=cmd; lastCmdTs=now; fn()
+    }
 
     rec.onresult=e=>{
       let interim="",final=""
@@ -1075,23 +1087,32 @@ export default function App(){
         const r=e.results[i][0].transcript
         if(e.results[i].isFinal)final+=r; else interim+=r
       }
-      if(interim)setVoiceTranscript(interim)
+      if(interim){
+        setVoiceTranscript(interim)
+        const itl=interim.toLowerCase()
+        // Interim fast-path: risposta immediata per next e go (parola singola riconosciuta)
+        if(stageActiveRef.current && DIRECT_NEXT.test(itl) && itl.replace(/[^a-zàèéìòù]/gi,"").length<8){
+          fireCmd("next",()=>{setVoiceFeed("▶ NEXT"); onShotFiredRef.current?.()})
+          return
+        }
+        if(stagePendingRef.current && DIRECT_GO.test(itl) && itl.replace(/[^a-zàèéìòù]/gi,"").length<8){
+          fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()})
+          return
+        }
+      }
       if(final){
         setVoiceTranscript("")
         const tl=final.toLowerCase().trim()
 
         // ── FAST PATH ──
-        // "go/vai/inizia" → attiva stage e parte il timer (quando stage è pending)
         if(stagePendingRef.current && DIRECT_GO.test(tl)){
-          setVoiceFeed("▶ GO"); startStageRef.current?.(); return
+          fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()}); return
         }
-        // "next/avanti" → colpo sparato (decrementa shots, avanza posizione quando finiti)
         if(stageActiveRef.current && DIRECT_NEXT.test(tl)){
-          setVoiceFeed("▶ NEXT"); onShotFiredRef.current?.(); return
+          fireCmd("next",()=>{setVoiceFeed("▶ NEXT"); onShotFiredRef.current?.()}); return
         }
-        // "colpo/sparo" → sinonimo diretto colpo
         if(stageActiveRef.current && DIRECT_SHOT.test(tl)){
-          setVoiceFeed("◉ COLPO"); onShotFiredRef.current?.(); return
+          fireCmd("shot",()=>{setVoiceFeed("◉ COLPO"); onShotFiredRef.current?.()}); return
         }
         // "stage N" → carica stage N dalla gara (durante gara, con o senza stage attivo)
         if(garaRef.current){
