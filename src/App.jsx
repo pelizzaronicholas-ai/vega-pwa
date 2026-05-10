@@ -224,8 +224,8 @@ function parsePRSChunk(chunk, stageNum, baseId){
   }
   // ── Costruisci targets ──
   let targets=[]
-  // Metodo 1: "Posizione N: istruzione" espliciti
-  const posLines=[...txt.matchAll(/Posizione\s+([A-Z0-9]+)[,:\s]+([^\n]{5,120})/gi)]
+  // Metodo 1: "Posizione N, bersaglio X, N colpi, [istruzione]" espliciti
+  const posLines=[...txt.matchAll(/Posizione\s+([A-Z0-9]+)[,:\s]+([^\n]{5,200})/gi)]
   if(posLines.length>0){
     for(const m of posLines){
       const instr=m[2].trim()
@@ -234,7 +234,16 @@ function parsePRSChunk(chunk, stageNum, baseId){
       const berL=berM?berM[1].toUpperCase():null
       const dist=berL&&distMap[berL]?distMap[berL]:null
       if(!dist)continue
-      targets.push({id:targets.length+1,pos:`Posizione ${m[1]}`,berLabel:berL,dist,shots:shotsM?+shotsM[1]:1,step:instr})
+      // Rileva "da ripetere N volte" — crea N entries per questa posizione
+      const ripM=instr.match(/(?:da\s+)?ripetere?\s+(\d+)\s*volt/i)
+      const rip=ripM?+ripM[1]:1
+      const shots=shotsM?+shotsM[1]:1
+      // step pulito senza "da ripetere N volte" per il TTS
+      const stepClean=instr.replace(/[,;]?\s*da\s+ripetere?\s+\d+\s*volt[ae]?/i,"").trim()
+      for(let r=1;r<=rip;r++){
+        const repLabel=rip>1?` (${r}/${rip})`:""
+        targets.push({id:targets.length+1,pos:`Posizione ${m[1]}${repLabel}`,berLabel:berL,dist,shots,step:stepClean})
+      }
     }
   }
   // Metodo 2: "Da/Per ogni posizione bersaglio X, N colpi" — scansiona tutto il testo
@@ -792,23 +801,12 @@ export default function App(){
       }
       return
     }
-    const nextT=stage.targets[nextIdx], prevT=stage.targets[tgtIdxRef.current]
+    const nextT=stage.targets[nextIdx]
     tgtIdxRef.current=nextIdx; shotsLeftRef.current=nextT.shots
     setTgtIdx(nextIdx); setShotsLeft(nextT.shots); setDist(nextT.dist)
-    const s=physSolve(nextT.dist,ammoKeyRef.current,scopeHRef.current,zeroMRef.current,wxRef.current)
-    const wt=s&&Math.abs(s.windMoa)>0.2?`, deriva ${ttsU(s.windMoa)}`:""
-    // Annuncio step-by-step: prima il cambio posizione (se c'è), poi i dati balistici
-    const posChange=nextT.pos!==prevT.pos
-    if(posChange){
-      // Pausa tra posizione e dati per separazione audio netta
-      speak(`Cambia posizione: ${nextT.pos}`,true)
-      setTimeout(()=>{
-        speak(`Bersaglio ${nextT.id}, ${nextT.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`)
-      },1200)
-    }else{
-      speak(`Bersaglio ${nextT.id}, ${nextT.dist} metri, alza ${ttsU(s?.dropMoa??0)}${wt}`,true)
-    }
-  },[speak,ttsU])
+    // Usa speakTarget per annuncio completo: posizione + istruzione + DOPE
+    speakTarget(stage, nextIdx, wxRef.current)
+  },[speak,speakTarget])
 
   const onShotFired = useCallback(()=>{
     if(!stageRef.current)return
@@ -838,23 +836,29 @@ export default function App(){
     setStageActive(false); setStagePending(true); stagePendingRef.current=true
     setMainTab("home"); setActivePanel(null)
 
-    // Annuncio iniziale: nome + meteo usato
-    const wxSrc=bleConnected?`vento Calypso ${curWx.wind}m/s`:`vento stimato ${curWx.wind}m/s`
-    speak(`${stage.name}. ${stage.targets.length} posizioni, ${stage.par} secondi. ${wxSrc}.`,true)
+    // Annuncio iniziale: nome + parametri + meteo
+    const colpiTot=stage.targets.reduce((s,t)=>s+t.shots,0)
+    const nPosDist=[...new Set(stage.targets.map(t=>t.pos))].length
+    const nBer=[...new Set(stage.targets.map(t=>t.berLabel||t.dist))].length
+    const wxSrc=bleConnected?`vento ${curWx.wind}m/s da Calypso`:`vento stimato ${curWx.wind}m/s`
+    speak(`${stage.name}. ${stage.par} secondi, ${colpiTot} colpi, ${nPosDist} posizioni, ${nBer} bersagl${nBer===1?"io":"i"}. ${wxSrc}.`,true)
 
-    // Leggi DOPE card completa in sequenza (400ms tra un target e l'altro)
-    let delay=1400
-    const uniqDists=[...new Map(sols.map(s=>[s.dist,s])).values()]
-    uniqDists.forEach((s)=>{
+    // Leggi bersagli con distanza e DOPE
+    let delay=1600
+    const uniqBer=[...new Map(sols.map(s=>[s.berLabel||s.dist,s])).values()]
+    uniqBer.forEach((s)=>{
       const wt=Math.abs(s.windMoa??0)>0.2?`, deriva ${ttsU(s.windMoa??0)}`:""
-      setTimeout(()=>speak(`Bersaglio ${s.berLabel||s.id}, ${s.dist} metri: alza ${ttsU(s.dropMoa??0)}${wt}.`),delay)
+      setTimeout(()=>speak(`Bersaglio ${s.berLabel||s.id}, ${s.dist} metri, alza ${ttsU(s.dropMoa??0)}${wt}.`),delay)
       delay+=1600
     })
-    // Istruzioni stage (se presenti da OCR)
-    if(stage.instructions){
-      setTimeout(()=>speak(stage.instructions,false),delay)
-      delay+=Math.min(stage.instructions.length*55, 7000)
-    }
+    // Leggi sequenza posizioni
+    stage.targets.forEach((t)=>{
+      const shots=t.shots>1?`, ${t.shots} colpi`:""
+      const stepClean=t.step?t.step.replace(/^\s*bersaglio\s+[A-Z][,.\s]*/i,"").trim():""
+      const dir=stepClean.length>3&&stepClean.length<80?`. ${stepClean}`:""
+      setTimeout(()=>speak(`${t.pos}, bersaglio ${t.berLabel||t.dist+"m"}${shots}${dir}.`),delay)
+      delay+=1400
+    })
     // Fine briefing: attendi "go"
     setTimeout(()=>speak('Stage pronto. Di "go" per iniziare.',true),delay)
   },[speak,ttsU,ammoKey,scopeH,zeroM,bleConnected])
@@ -1147,7 +1151,7 @@ export default function App(){
         const itlLen=itl.replace(/[^a-zàèéìòù]/gi,"").length
         // Interim fast-path: risposta immediata per parole singole
         if(stageActiveRef.current && DIRECT_NEXT.test(itl) && itlLen<8){
-          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); onShotFiredRef.current?.()})
+          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); advanceTargetRef.current?.()})
           return
         }
         if(stagePendingRef.current && DIRECT_GO.test(itl) && itlLen<8){
@@ -1168,7 +1172,7 @@ export default function App(){
           fireCmd("go",()=>{setVoiceFeed("▶ GO"); startStageRef.current?.()}); return
         }
         if(stageActiveRef.current && DIRECT_NEXT.test(tl)){
-          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); onShotFiredRef.current?.()}); return
+          fireCmd("next",()=>{setVoiceFeed("▶ VAI/NEXT"); advanceTargetRef.current?.()}); return
         }
         if(DIRECT_STOP.test(tl)){
           fireCmd("stop",()=>{setVoiceFeed("⏹ STOP"); stopTimer()}); return
