@@ -189,21 +189,39 @@ function parsePRSChunk(chunk, stageNum, baseId){
   // ── Nome ──
   const nmM=txt.match(/Stage\s+\d+[-\s]*([^\n]{1,60})(?:TEMPO|$)/i)
   const name=nmM?nmM[1].replace(/\s+/g," ").trim().replace(/[^a-zA-Z0-9àèéìòùÀÈÉÌÒÙ '\-]/g,"").trim():`Stage ${stageNum}`
-  // ── Parametri ──
-  const par=+(txt.match(/TEMPO[:\s"']*(\d+)/i)||[0,90])[1]
-  const colpiTot=+(txt.match(/COLPI[:\s]*(\d+)/i)||[0,0])[1]
-  const nPos=+(txt.match(/POSIZIONI[:\s]*(\d+)/i)||[0,1])[1]
-  // ── Mappa lettera→distanza (singola lettera seguita da "NNm") ──
+  // ── Parametri — robusto a OCR che usa . o ; invece di : ──
+  const par=+(txt.match(/TEMPO\s*[.:\-]?\s*"?\s*(\d+)/i)||[0,90])[1]
+  const colpiTot=+(txt.match(/COLPI\s*[.:\-]?\s*(\d+)/i)||[0,0])[1]
+  const nPos=+(txt.match(/POSIZIONI\s*[.:\-]?\s*(\d+)/i)||[0,0])[1]||
+             +(txt.match(/(\d+)\s*POSIZIONI/i)||[0,0])[1]||1
+  // ── Mappa lettera→distanza ──
+  // Non usa \b perché OCR può fondere "BERSAGLID: 139m" (header+lettera senza spazio)
+  // Pattern principale: lettera singola maiuscola preceduta da non-lettera, poi "NNm"
   const distMap={}
-  for(const m of txt.matchAll(/\b([A-Z])\s*:\s*(\d{2,4})\s*m/g)){
+  // Prima cerca nella sezione BERSAGLI dedicata (lettera:distanza;...)
+  const berSec=txt.match(/BERSAGLI[^\n:]*\n([\s\S]*?)(?:\n\n|Stage\s+\d|$)/i)
+  const scanSrc=berSec?berSec[1]+"\n"+txt:txt
+  for(const m of scanSrc.matchAll(/(?:^|[\s\n;,])([A-Z])\s*[.:]\s*(\d{2,4})\s*m/gm)){
     const k=m[1].toUpperCase()
-    // Esclude false match come T(EMPO), C(OLPI), P(OSIZIONI), S(TAGE)
-    if(!'TCPS'.includes(k)) distMap[k]=+m[2]
+    if(!'TCPSBNU'.includes(k)&&!distMap[k]) distMap[k]=+m[2]
+  }
+  // Fallback: "a NNNm" con bersaglio menzionato nella stessa frase
+  if(!Object.keys(distMap).length){
+    for(const m of txt.matchAll(/bersaglio\s+([A-Za-z])[\s\S]{0,40}?\b(\d{2,4})\s*m/gi)){
+      const k=m[1].toUpperCase()
+      if(!distMap[k]) distMap[k]=+m[2]
+    }
   }
   // ── Istruzioni complete stage (per briefing TTS) ──
   let instrText=""
-  const instrM=txt.match(/(?:Da|Per|Ad)\s+ogni\s+posizione\s*:?\s*([\s\S]*?)(?=BERSAGLI\s*B|Stage\s+\d|$)/i)
+  // Cattura "Per/Da/Ad ogni posizione..." oppure tutta la frase descrittiva
+  const instrM=txt.match(/(?:(?:Da|Per|Ad)\s+ogni\s+posizione\s*:?\s*)([\s\S]*?)(?=\n\n|BERSAGLI\s*\n|Stage\s+\d|$)/i)
   if(instrM) instrText=instrM[1].replace(/\s+/g," ").trim()
+  // Se non trovato, cerca la prima frase con "bersaglio" (stile "Per ogni posizione bersaglio D…")
+  if(!instrText){
+    const fb=txt.match(/(?:Per|Da|Ad)\s+ogni\s+posizione[^\n]{0,200}/i)
+    if(fb) instrText=fb[0].replace(/\s+/g," ").trim()
+  }
   // ── Costruisci targets ──
   let targets=[]
   // Metodo 1: "Posizione N: istruzione" espliciti
@@ -219,55 +237,53 @@ function parsePRSChunk(chunk, stageNum, baseId){
       targets.push({id:targets.length+1,pos:`Posizione ${m[1]}`,berLabel:berL,dist,shots:shotsM?+shotsM[1]:1,step:instr})
     }
   }
-  // Metodo 2: "Da ogni posizione: N colpi sul bersaglio X"
-  if(!targets.length && instrText){
+  // Metodo 2: "Da/Per ogni posizione bersaglio X, N colpi" — scansiona tutto il testo
+  if(!targets.length){
+    const searchIn=instrText||txt
     // Pattern A: "N colpi su[l]/a bersaglio X"
     const pA=/(\d+)\s*colp[a-z]*\s+su[a-z]*\s+bersaglio\s+([A-Za-z])/gi
-    // Pattern B: "bersaglio X ... N colpi"
-    const pB=/bersaglio\s+([A-Za-z])[^.]*?(\d+)\s*colp/gi
-    const hitsA=[...instrText.matchAll(pA)]
-    const hitsB=[...instrText.matchAll(pB)]
+    // Pattern B: "bersaglio X [sx-dx, ...] N colpi"
+    const pB=/bersaglio\s+([A-Za-z])[^.\n]*?(\d+)\s*colp/gi
+    // Pattern C: "bersaglio X" + distMap + colpiTot/nPos
+    const hitsA=[...searchIn.matchAll(pA)]
+    const hitsB=[...searchIn.matchAll(pB)]
+    const shotsPerPos=nPos>0&&colpiTot>0?Math.round(colpiTot/nPos):1
     if(hitsA.length>0){
-      for(let p=1;p<=Math.max(nPos,1);p++){
+      for(let p=1;p<=Math.max(nPos,1);p++)
         for(const m of hitsA){
           const shots=+m[1], berL=m[2].toUpperCase()
           const dist=distMap[berL]; if(!dist)continue
-          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:instrText.slice(0,120)})
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:(instrText||searchIn).slice(0,120)})
         }
-      }
     } else if(hitsB.length>0){
-      for(let p=1;p<=Math.max(nPos,1);p++){
+      for(let p=1;p<=Math.max(nPos,1);p++)
         for(const m of hitsB){
           const berL=m[1].toUpperCase(), shots=+m[2]
           const dist=distMap[berL]; if(!dist)continue
-          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:instrText.slice(0,120)})
+          targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots,step:(instrText||searchIn).slice(0,120)})
         }
-      }
     } else if(Object.keys(distMap).length>0){
-      // Fallback: nPos posizioni × distMap × colpi calcolati
-      const shotsPerPos=nPos>0&&colpiTot>0?Math.round(colpiTot/nPos):1
-      for(let p=1;p<=Math.max(nPos,1);p++){
-        for(const[berL,dist] of Object.entries(distMap)){
+      // Fallback: nPos posizioni × ogni bersaglio in distMap
+      for(let p=1;p<=Math.max(nPos,1);p++)
+        for(const[berL,dist] of Object.entries(distMap))
           targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:berL,dist,shots:shotsPerPos,step:instrText||`Bersaglio ${berL} a ${dist}m`})
-        }
-      }
     }
   }
-  // Metodo 3: distMap diretta (fallback finale)
+  // Metodo 3: distMap pura — ultimo fallback
   if(!targets.length && Object.keys(distMap).length>0){
     const shotsEach=nPos>0&&colpiTot>0?Math.round(colpiTot/nPos):colpiTot||1
-    for(let p=1;p<=Math.max(nPos,1);p++){
+    for(let p=1;p<=Math.max(nPos,1);p++)
       Object.entries(distMap).forEach(([l,d])=>
         targets.push({id:targets.length+1,pos:`Posizione ${p}`,berLabel:l,dist:d,shots:shotsEach,step:instrText||`Bersaglio ${l} a ${d}m`}))
-    }
   }
   if(!targets.length) return null
+  const effNPos=targets.length/Math.max(Object.keys(distMap).length||1,1)
   return{
     id:baseId+stageNum, stageNum,
     name:`Stage ${stageNum} — ${name}`,
-    desc:`${colpiTot||targets.reduce((s,t)=>s+t.shots,0)} colpi · ${nPos} posizioni`,
+    desc:`${colpiTot||targets.reduce((s,t)=>s+t.shots,0)} colpi · ${Math.round(effNPos)||nPos} posizioni`,
     par, targets,
-    instructions: instrText.slice(0,400) // istruzioni complete per briefing vocale
+    instructions: instrText.slice(0,400)
   }
 }
 
