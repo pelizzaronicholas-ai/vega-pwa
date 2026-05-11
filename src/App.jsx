@@ -1454,7 +1454,7 @@ export default function App(){
             :stageActive
               ?<span>Di <b style={{color:AMB}}>"vai"</b> per avanzare</span>
               :stagePending
-                ?<span style={{animation:"bleBlip 1s infinite"}}>Di <b style={{color:CYN}}>"parti"</b> per avviare</span>
+                ?<span style={{animation:"bleBlip 1s infinite"}}>Di <b style={{color:CYN}}>"vai"</b> per avviare</span>
                 :gara&&!stageActive
                   ?<span>Di <b style={{color:PRP}}>"stage {gara.currentIdx+1}"</b> per iniziare</span>
                   :voiceFeed}
@@ -3086,11 +3086,13 @@ export default function App(){
               Dì "Vega" + comando, oppure parole rapide durante stage attivo
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:0}}>
-              {[["stage [N]","carica stage N dalla gara"],["go / inizia","avvia timer stage"],
-                ["next / avanti","avanza bersaglio/colpo"],["colpo / fuoco","registra colpo"],
+              {[["vai","avvia timer (pending) / avanza bersaglio (attivo)"],
+                ["vai stage [N]","carica stage N"],
+                ["stop / ferma","ferma timer"],
+                ["colpo / sparo","registra colpo"],
                 ["alzo","legge alzo corrente"],["distanza [N]","imposta distanza"],
                 ["millirad / MOA","cambia unità angolari"],["timer [N]","avvia timer"],
-                ["stop","ferma timer"]].map(([c,d])=>(
+                ["Vega + comando","comandi estesi"]].map(([c,d])=>(
                 <div key={c} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",
                   borderBottom:`1px solid ${SF}`}}>
                   <span style={{color:SB,fontFamily:"'IBM Plex Mono',monospace",fontSize:12,fontWeight:700}}>{c}</span>
